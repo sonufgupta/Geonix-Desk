@@ -40,6 +40,35 @@
                 <p>Status: Connected & Ready</p>
             </div>
 
+            <div class="sidebar-status-card" style="margin-top: 15px;" id="matching-rules-panel">
+                <div class="status-indicator">
+                    <i class="fa-solid fa-sliders" style="color: var(--primary); font-size: 0.95rem;"></i>
+                    <h4 style="margin: 0 0 0 8px; font-size: 0.85rem; font-weight: 700; color: white;">Matching Rules</h4>
+                </div>
+                <div style="margin-top: 12px; display: flex; flex-direction: column; gap: 8px;">
+                    <label style="display: flex; align-items: center; gap: 8px; font-size: 0.75rem; color: var(--text-muted); cursor: pointer; user-select: none;">
+                        <input type="checkbox" id="rule-customer-name" checked onchange="saveMatchingRules()" style="accent-color: var(--primary);">
+                        <span>Customer Name Match</span>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 8px; font-size: 0.75rem; color: var(--text-muted); cursor: pointer; user-select: none;">
+                        <input type="checkbox" id="rule-qty" checked onchange="saveMatchingRules()" style="accent-color: var(--primary);">
+                        <span>Quantity Match</span>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 8px; font-size: 0.75rem; color: var(--text-muted); cursor: pointer; user-select: none;">
+                        <input type="checkbox" id="rule-pincode" checked onchange="saveMatchingRules()" style="accent-color: var(--primary);">
+                        <span>Pincode Match</span>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 8px; font-size: 0.75rem; color: var(--text-muted); cursor: pointer; user-select: none;">
+                        <input type="checkbox" id="rule-city" checked onchange="saveMatchingRules()" style="accent-color: var(--primary);">
+                        <span>City Match</span>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 8px; font-size: 0.75rem; color: var(--text-muted); cursor: pointer; user-select: none;">
+                        <input type="checkbox" id="rule-state" checked onchange="saveMatchingRules()" style="accent-color: var(--primary);">
+                        <span>State Match</span>
+                    </label>
+                </div>
+            </div>
+
             <div class="sidebar-status-card" style="margin-top: 15px;">
                 <div class="status-indicator">
                     <span class="pulse-dot green"></span>

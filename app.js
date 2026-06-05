@@ -88,7 +88,54 @@ function initRealTimeSync() {
     });
 }
 
-// Start Real-Time Sync
+// Matching Rules State
+let matchingRules = {
+    customerName: true,
+    qty: true,
+    pincode: true,
+    city: true,
+    state: true
+};
+
+function loadMatchingRules() {
+    const savedRules = localStorage.getItem('geonix_matching_rules');
+    if (savedRules) {
+        try {
+            matchingRules = JSON.parse(savedRules);
+        } catch (e) {
+            console.error("Error parsing matching rules", e);
+        }
+    }
+    
+    // Set checkbox states in UI
+    const elName = document.getElementById('rule-customer-name');
+    const elQty = document.getElementById('rule-qty');
+    const elPin = document.getElementById('rule-pincode');
+    const elCity = document.getElementById('rule-city');
+    const elState = document.getElementById('rule-state');
+    
+    if (elName) elName.checked = matchingRules.customerName;
+    if (elQty) elQty.checked = matchingRules.qty;
+    if (elPin) elPin.checked = matchingRules.pincode;
+    if (elCity) elCity.checked = matchingRules.city;
+    if (elState) elState.checked = matchingRules.state;
+}
+
+function saveMatchingRules() {
+    matchingRules = {
+        customerName: document.getElementById('rule-customer-name')?.checked !== false,
+        qty: document.getElementById('rule-qty')?.checked !== false,
+        pincode: document.getElementById('rule-pincode')?.checked !== false,
+        city: document.getElementById('rule-city')?.checked !== false,
+        state: document.getElementById('rule-state')?.checked !== false
+    };
+    localStorage.setItem('geonix_matching_rules', JSON.stringify(matchingRules));
+    showToast("Reconciliation rules updated. Re-evaluating database...", "info");
+    reRunReconciliation();
+}
+
+// Start Matching Rules & Real-Time Sync
+loadMatchingRules();
 initRealTimeSync();
 
 // Extract PDF text content
@@ -840,41 +887,44 @@ function checkMatchingRules(r, parsedDoc, isInvoiceUpload) {
     if (!isPendingDoc) return { match: false, reason: '' };
     
     // Check 1: Customer Name
-    const nameMatches = r.customer_name === parsedDoc.customer_name;
+    const nameMatches = !matchingRules.customerName || (r.customer_name === parsedDoc.customer_name);
     
     // Check 2: Quantity
     const docQty = parsedDoc.total_qty;
     const recQty = isInvoiceUpload ? r.shipment_qty : r.invoice_qty;
-    const qtyMatches = recQty === docQty;
+    const qtyMatches = !matchingRules.qty || (recQty === docQty);
     
     // Check 3: Pincode
-    const pinMatches = r.ship_to_pincode !== 'N/A' && 
+    const pinMatches = !matchingRules.pincode || (
+                       r.ship_to_pincode !== 'N/A' && 
                        parsedDoc.ship_to_pincode !== 'N/A' && 
-                       r.ship_to_pincode === parsedDoc.ship_to_pincode;
+                       r.ship_to_pincode === parsedDoc.ship_to_pincode);
                        
     // Check 4: City
     const recCity = (r.ship_to_city || '').trim().toUpperCase();
     const docCity = (parsedDoc.ship_to_city || '').trim().toUpperCase();
-    const cityMatches = recCity !== '' && docCity !== '' && recCity === docCity;
+    const cityMatches = !matchingRules.city || (recCity !== '' && docCity !== '' && recCity === docCity);
     
     // Check 5: State
     const recState = (r.ship_to_state || '').trim().toUpperCase();
     const docState = (parsedDoc.ship_to_state || '').trim().toUpperCase();
-    const stateMatches = recState !== '' && docState !== '' && recState === docState;
+    const stateMatches = !matchingRules.state || (recState !== '' && docState !== '' && recState === docState);
     
     // Strict Match: Customer, Quantity, Pincode, City, and State must all match at the same time
     if (nameMatches && qtyMatches && pinMatches && cityMatches && stateMatches) {
         return { match: true, reason: 'Matched' };
     }
     
-    // Return mismatch warning details if Customer Name matches but any strict matching criteria fails
-    if (nameMatches) {
+    // Return mismatch warning details if Customer Name matches but any active strict matching criteria fails
+    if (r.customer_name === parsedDoc.customer_name) {
         let mismatchDetails = [];
-        if (!qtyMatches) mismatchDetails.push(`Qty Mismatch (${recQty} vs ${docQty})`);
-        if (!pinMatches) mismatchDetails.push(`Pincode Mismatch (${r.ship_to_pincode} vs ${parsedDoc.ship_to_pincode})`);
-        if (!cityMatches) mismatchDetails.push(`City Mismatch (${recCity} vs ${docCity})`);
-        if (!stateMatches) mismatchDetails.push(`State Mismatch (${recState} vs ${docState})`);
-        return { match: false, reason: mismatchDetails.join(', ') };
+        if (matchingRules.qty && !qtyMatches) mismatchDetails.push(`Qty Mismatch (${recQty} vs ${docQty})`);
+        if (matchingRules.pincode && !pinMatches) mismatchDetails.push(`Pincode Mismatch (${r.ship_to_pincode} vs ${parsedDoc.ship_to_pincode})`);
+        if (matchingRules.city && !cityMatches) mismatchDetails.push(`City Mismatch (${recCity} vs ${docCity})`);
+        if (matchingRules.state && !stateMatches) mismatchDetails.push(`State Mismatch (${recState} vs ${docState})`);
+        if (mismatchDetails.length > 0) {
+            return { match: false, reason: mismatchDetails.join(', ') };
+        }
     }
     
     return { match: false, reason: '' };
@@ -1105,6 +1155,246 @@ function reconcileDocument(parsedDoc) {
     renderFeed();
 }
 
+// Re-run the reconciliation matching from scratch for all records (e.g. when matching rules are changed)
+function reRunReconciliation() {
+    const currentRecords = getLocalRecords();
+    const rawInvoices = [];
+    const rawShipments = [];
+    
+    currentRecords.forEach(row => {
+        if (row.invoice_number) {
+            rawInvoices.push({
+                type: 'invoice',
+                customer_name: row.invoice_customer_name || row.customer_name,
+                invoice_number: row.invoice_number,
+                invoice_date: row.invoice_date,
+                due_date: row.due_date,
+                eway_bill: row.eway_bill,
+                invoice_amount: row.invoice_amount,
+                items: row.invoice_items || [],
+                total_qty: row.invoice_qty,
+                sales_person: row.sales_person,
+                gstin: row.gstin,
+                pan: row.pan,
+                phone: row.phone,
+                ship_to_address: row.invoice_address || row.ship_to_address,
+                ship_to_city: row.invoice_city || row.ship_to_city,
+                ship_to_state: row.invoice_state || row.ship_to_state,
+                ship_to_pincode: row.invoice_pincode || row.ship_to_pincode
+            });
+        }
+        if (row.shipment_number) {
+            rawShipments.push({
+                type: 'shipment',
+                customer_name: row.shipment_customer_name || row.customer_name,
+                shipment_number: row.shipment_number,
+                shipment_date: row.shipment_date,
+                carrier: row.carrier,
+                tracking_number: row.tracking_number,
+                tracking_status: row.tracking_status,
+                delivery_timestamp: row.delivery_timestamp,
+                sales_order_number: row.sales_order_number,
+                order_date: row.order_date,
+                boxes: row.boxes,
+                weight: row.weight,
+                items: row.shipment_items || [],
+                total_qty: row.shipment_qty,
+                ship_to_address: row.shipment_address || row.ship_to_address,
+                ship_to_city: row.shipment_city || row.ship_to_city,
+                ship_to_state: row.shipment_state || row.ship_to_state,
+                ship_to_pincode: row.shipment_pincode || row.ship_to_pincode
+            });
+        }
+    });
+
+    const newRecords = [];
+    
+    function localReconcile(parsedDoc) {
+        if (parsedDoc.type === 'invoice') {
+            if (newRecords.some(r => r.invoice_number === parsedDoc.invoice_number)) {
+                return;
+            }
+            let matchIndex = -1;
+            for (let i = 0; i < newRecords.length; i++) {
+                const check = checkMatchingRules(newRecords[i], parsedDoc, true);
+                if (check.match) {
+                    matchIndex = i;
+                    break;
+                }
+            }
+            
+            if (matchIndex !== -1) {
+                const match = newRecords[matchIndex];
+                match.invoice_number = parsedDoc.invoice_number;
+                match.invoice_date = parsedDoc.invoice_date;
+                match.due_date = parsedDoc.due_date;
+                match.eway_bill = parsedDoc.eway_bill;
+                match.invoice_amount = parsedDoc.invoice_amount;
+                match.invoice_items = parsedDoc.items;
+                match.invoice_qty = parsedDoc.total_qty;
+                match.invoice_rate = parsedDoc.items[0]?.rate || 'N/A';
+                match.sales_person = parsedDoc.sales_person;
+                match.gstin = parsedDoc.gstin;
+                match.pan = parsedDoc.pan;
+                match.phone = parsedDoc.phone;
+                match.ship_to_address = parsedDoc.ship_to_address;
+                match.ship_to_city = parsedDoc.ship_to_city;
+                match.ship_to_state = parsedDoc.ship_to_state;
+                match.ship_to_pincode = parsedDoc.ship_to_pincode;
+                match.invoice_address = parsedDoc.ship_to_address;
+                match.invoice_city = parsedDoc.ship_to_city;
+                match.invoice_state = parsedDoc.ship_to_state;
+                match.invoice_pincode = parsedDoc.ship_to_pincode;
+                match.invoice_customer_name = parsedDoc.customer_name;
+                match.qty_match = match.invoice_qty === match.shipment_qty;
+                match.status = 'Matched';
+            } else {
+                newRecords.push({
+                    id: 'rec-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5),
+                    customer_name: parsedDoc.customer_name,
+                    invoice_customer_name: parsedDoc.customer_name,
+                    shipment_customer_name: null,
+                    gstin: parsedDoc.gstin,
+                    pan: parsedDoc.pan,
+                    phone: parsedDoc.phone,
+                    ship_to_address: parsedDoc.ship_to_address,
+                    ship_to_city: parsedDoc.ship_to_city,
+                    ship_to_state: parsedDoc.ship_to_state,
+                    ship_to_pincode: parsedDoc.ship_to_pincode,
+                    invoice_address: parsedDoc.ship_to_address,
+                    invoice_city: parsedDoc.ship_to_city,
+                    invoice_state: parsedDoc.ship_to_state,
+                    invoice_pincode: parsedDoc.ship_to_pincode,
+                    shipment_address: null,
+                    shipment_city: null,
+                    shipment_state: null,
+                    shipment_pincode: null,
+                    invoice_number: parsedDoc.invoice_number,
+                    invoice_date: parsedDoc.invoice_date,
+                    due_date: parsedDoc.due_date,
+                    eway_bill: parsedDoc.eway_bill,
+                    invoice_amount: parsedDoc.invoice_amount,
+                    invoice_items: parsedDoc.items,
+                    invoice_qty: parsedDoc.total_qty,
+                    invoice_rate: parsedDoc.items[0]?.rate || 'N/A',
+                    sales_person: parsedDoc.sales_person,
+                    shipment_number: null,
+                    shipment_date: null,
+                    carrier: null,
+                    tracking_number: null,
+                    tracking_status: 'Pending Upload',
+                    sales_order_number: null,
+                    order_date: null,
+                    shipment_qty: null,
+                    qty_match: null,
+                    boxes: null,
+                    weight: null,
+                    shipment_items: null,
+                    status: 'Pending Shipment',
+                    timestamp: new Date().toISOString()
+                });
+            }
+        } else if (parsedDoc.type === 'shipment') {
+            if (newRecords.some(r => r.shipment_number === parsedDoc.shipment_number)) {
+                return;
+            }
+            let matchIndex = -1;
+            for (let i = 0; i < newRecords.length; i++) {
+                const check = checkMatchingRules(newRecords[i], parsedDoc, false);
+                if (check.match) {
+                    matchIndex = i;
+                    break;
+                }
+            }
+            
+            if (matchIndex !== -1) {
+                const match = newRecords[matchIndex];
+                match.shipment_number = parsedDoc.shipment_number;
+                match.shipment_date = parsedDoc.shipment_date;
+                match.carrier = parsedDoc.carrier;
+                match.tracking_number = parsedDoc.tracking_number;
+                match.tracking_status = parsedDoc.tracking_status || 'In Transit';
+                if (parsedDoc.delivery_timestamp) {
+                    match.delivery_timestamp = parsedDoc.delivery_timestamp;
+                }
+                match.sales_order_number = parsedDoc.sales_order_number;
+                match.order_date = parsedDoc.order_date;
+                match.boxes = parsedDoc.boxes;
+                match.weight = parsedDoc.weight;
+                match.shipment_items = parsedDoc.items;
+                match.shipment_qty = parsedDoc.total_qty;
+                match.shipment_address = parsedDoc.ship_to_address;
+                match.shipment_city = parsedDoc.ship_to_city;
+                match.shipment_state = parsedDoc.ship_to_state;
+                match.shipment_pincode = parsedDoc.ship_to_pincode;
+                match.shipment_customer_name = parsedDoc.customer_name;
+                
+                if (!match.ship_to_address || match.ship_to_address === 'N/A') {
+                    match.ship_to_address = parsedDoc.ship_to_address;
+                    match.ship_to_city = parsedDoc.ship_to_city;
+                    match.ship_to_state = parsedDoc.ship_to_state;
+                    match.ship_to_pincode = parsedDoc.ship_to_pincode;
+                }
+                
+                match.qty_match = match.invoice_qty === match.shipment_qty;
+                match.status = 'Matched';
+            } else {
+                newRecords.push({
+                    id: 'rec-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5),
+                    customer_name: parsedDoc.customer_name,
+                    invoice_customer_name: null,
+                    shipment_customer_name: parsedDoc.customer_name,
+                    gstin: 'N/A',
+                    pan: 'N/A',
+                    phone: 'N/A',
+                    ship_to_address: parsedDoc.ship_to_address,
+                    ship_to_city: parsedDoc.ship_to_city,
+                    ship_to_state: parsedDoc.ship_to_state,
+                    ship_to_pincode: parsedDoc.ship_to_pincode,
+                    invoice_address: null,
+                    invoice_city: null,
+                    invoice_state: null,
+                    invoice_pincode: null,
+                    shipment_address: parsedDoc.ship_to_address,
+                    shipment_city: parsedDoc.ship_to_city,
+                    shipment_state: parsedDoc.ship_to_state,
+                    shipment_pincode: parsedDoc.ship_to_pincode,
+                    invoice_number: null,
+                    invoice_date: null,
+                    due_date: null,
+                    eway_bill: null,
+                    invoice_amount: null,
+                    invoice_items: null,
+                    invoice_qty: null,
+                    invoice_rate: null,
+                    sales_person: null,
+                    shipment_number: parsedDoc.shipment_number,
+                    shipment_date: parsedDoc.shipment_date,
+                    carrier: parsedDoc.carrier,
+                    tracking_number: parsedDoc.tracking_number,
+                    tracking_status: parsedDoc.tracking_status || 'In Transit',
+                    delivery_timestamp: parsedDoc.delivery_timestamp || null,
+                    sales_order_number: parsedDoc.sales_order_number,
+                    order_date: parsedDoc.order_date,
+                    shipment_qty: parsedDoc.total_qty,
+                    qty_match: null,
+                    boxes: parsedDoc.boxes,
+                    weight: parsedDoc.weight,
+                    shipment_items: parsedDoc.items,
+                    status: 'Pending Invoice',
+                    timestamp: new Date().toISOString()
+                });
+            }
+        }
+    }
+
+    rawInvoices.forEach(inv => localReconcile(inv));
+    rawShipments.forEach(shp => localReconcile(shp));
+
+    saveLocalRecords(newRecords);
+    renderFeed();
+}
+
 // Calculate Overdue status
 function getOverdueDetails(dueDateStr) {
     if (!dueDateStr) return { days: 0, remark: 'N/A', isOverdue: false };
@@ -1317,6 +1607,17 @@ function renderFeed() {
             ? `<div class="match-link"><i class="fa-solid fa-link"></i></div>`
             : `<div class="match-link broken"><i class="fa-solid fa-link-slash"></i></div>`;
 
+        // Mismatch labels
+        let mismatchLabelsHtml = '';
+        if (!isMatched) {
+            const mismatches = getMismatchDetailsForCard(row, records);
+            if (mismatches && mismatches.length > 0) {
+                mismatches.forEach(m => {
+                    mismatchLabelsHtml += `<span class="badge badge-danger" style="margin-left: 8px; background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3);" title="${m.details}"><i class="fa-solid fa-circle-exclamation"></i> ${m.label}</span>`;
+                });
+            }
+        }
+
         // Verification Badge Row
         let verificationBadge = '';
         if (isMatched) {
@@ -1436,8 +1737,9 @@ function renderFeed() {
                     <span class="customer-tag">Customer</span>
                     <h3>${row.customer_name}</h3>
                 </div>
-                <div style="display: flex; align-items: center; gap: 10px;">
+                <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
                     ${statusTag}
+                    ${mismatchLabelsHtml}
                     ${verificationBadge}
                     ${overdueBadge}
                     ${editBtn}
