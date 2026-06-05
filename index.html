@@ -40,32 +40,64 @@
                 <p>Status: Connected & Ready</p>
             </div>
 
-            <div class="sidebar-status-card" style="margin-top: 15px;" id="matching-rules-panel">
+            <div class="sidebar-status-card" style="margin-top: 15px;" id="exceptions-panel">
                 <div class="status-indicator">
-                    <i class="fa-solid fa-sliders" style="color: var(--primary); font-size: 0.95rem;"></i>
-                    <h4 style="margin: 0 0 0 8px; font-size: 0.85rem; font-weight: 700; color: white;">Matching Rules</h4>
+                    <i class="fa-solid fa-triangle-exclamation" style="color: #fbbf24; font-size: 0.95rem;"></i>
+                    <h4 style="margin: 0 0 0 8px; font-size: 0.85rem; font-weight: 700; color: white;">Exceptions Desk</h4>
                 </div>
-                <div style="margin-top: 12px; display: flex; flex-direction: column; gap: 8px;">
-                    <label style="display: flex; align-items: center; gap: 8px; font-size: 0.75rem; color: var(--text-muted); cursor: pointer; user-select: none;">
-                        <input type="checkbox" id="rule-customer-name" checked onchange="saveMatchingRules()" style="accent-color: var(--primary);">
-                        <span>Customer Name Match</span>
-                    </label>
-                    <label style="display: flex; align-items: center; gap: 8px; font-size: 0.75rem; color: var(--text-muted); cursor: pointer; user-select: none;">
-                        <input type="checkbox" id="rule-qty" checked onchange="saveMatchingRules()" style="accent-color: var(--primary);">
-                        <span>Quantity Match</span>
-                    </label>
-                    <label style="display: flex; align-items: center; gap: 8px; font-size: 0.75rem; color: var(--text-muted); cursor: pointer; user-select: none;">
-                        <input type="checkbox" id="rule-pincode" checked onchange="saveMatchingRules()" style="accent-color: var(--primary);">
-                        <span>Pincode Match</span>
-                    </label>
-                    <label style="display: flex; align-items: center; gap: 8px; font-size: 0.75rem; color: var(--text-muted); cursor: pointer; user-select: none;">
-                        <input type="checkbox" id="rule-city" checked onchange="saveMatchingRules()" style="accent-color: var(--primary);">
-                        <span>City Match</span>
-                    </label>
-                    <label style="display: flex; align-items: center; gap: 8px; font-size: 0.75rem; color: var(--text-muted); cursor: pointer; user-select: none;">
-                        <input type="checkbox" id="rule-state" checked onchange="saveMatchingRules()" style="accent-color: var(--primary);">
-                        <span>State Match</span>
-                    </label>
+                
+                <!-- Active Mismatches -->
+                <div style="margin-top: 12px; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 10px;">
+                    <span style="font-size: 0.65rem; color: var(--text-muted); font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;">Active Mismatches</span>
+                    <div style="margin-top: 6px; display: flex; flex-direction: column; gap: 6px;">
+                        <div onclick="openMismatchModal('customer')" class="exceptions-sidebar-row" style="display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; cursor: pointer; padding: 4px 6px; border-radius: 4px; transition: var(--transition-smooth);">
+                            <span style="color: #f87171;"><i class="fa-solid fa-circle-exclamation" style="margin-right: 4px;"></i> Customer Mismatch</span>
+                            <span id="stat-mismatch-customer" style="background: rgba(239, 68, 68, 0.2); color: #f87171; padding: 1px 6px; border-radius: 4px; font-weight: 700;">0</span>
+                        </div>
+                        <div onclick="openMismatchModal('qty')" class="exceptions-sidebar-row" style="display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; cursor: pointer; padding: 4px 6px; border-radius: 4px; transition: var(--transition-smooth);">
+                            <span style="color: #f87171;"><i class="fa-solid fa-circle-exclamation" style="margin-right: 4px;"></i> Qty Mismatch</span>
+                            <span id="stat-mismatch-qty" style="background: rgba(239, 68, 68, 0.2); color: #f87171; padding: 1px 6px; border-radius: 4px; font-weight: 700;">0</span>
+                        </div>
+                        <div onclick="openMismatchModal('pincode')" class="exceptions-sidebar-row" style="display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; cursor: pointer; padding: 4px 6px; border-radius: 4px; transition: var(--transition-smooth);">
+                            <span style="color: #f87171;"><i class="fa-solid fa-circle-exclamation" style="margin-right: 4px;"></i> Pincode Mismatch</span>
+                            <span id="stat-mismatch-pincode" style="background: rgba(239, 68, 68, 0.2); color: #f87171; padding: 1px 6px; border-radius: 4px; font-weight: 700;">0</span>
+                        </div>
+                        <div onclick="openMismatchModal('city')" class="exceptions-sidebar-row" style="display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; cursor: pointer; padding: 4px 6px; border-radius: 4px; transition: var(--transition-smooth);">
+                            <span style="color: #f87171;"><i class="fa-solid fa-circle-exclamation" style="margin-right: 4px;"></i> City Mismatch</span>
+                            <span id="stat-mismatch-city" style="background: rgba(239, 68, 68, 0.2); color: #f87171; padding: 1px 6px; border-radius: 4px; font-weight: 700;">0</span>
+                        </div>
+                        <div onclick="openMismatchModal('state')" class="exceptions-sidebar-row" style="display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; cursor: pointer; padding: 4px 6px; border-radius: 4px; transition: var(--transition-smooth);">
+                            <span style="color: #f87171;"><i class="fa-solid fa-circle-exclamation" style="margin-right: 4px;"></i> State Mismatch</span>
+                            <span id="stat-mismatch-state" style="background: rgba(239, 68, 68, 0.2); color: #f87171; padding: 1px 6px; border-radius: 4px; font-weight: 700;">0</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Ignored Exception Rules -->
+                <div style="margin-top: 10px;">
+                    <span style="font-size: 0.65rem; color: var(--text-muted); font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;">Ignored Exceptions</span>
+                    <div style="margin-top: 6px; display: flex; flex-direction: column; gap: 6px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem;">
+                            <span style="color: #fbbf24;"><i class="fa-solid fa-unlock-keyhole" style="margin-right: 4px;"></i> Ignored Customer</span>
+                            <span id="stat-bypass-customer" style="background: rgba(251, 191, 36, 0.2); color: #fbbf24; padding: 1px 6px; border-radius: 4px; font-weight: 700;">0</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem;">
+                            <span style="color: #fbbf24;"><i class="fa-solid fa-unlock-keyhole" style="margin-right: 4px;"></i> Ignored Qty</span>
+                            <span id="stat-bypass-qty" style="background: rgba(251, 191, 36, 0.2); color: #fbbf24; padding: 1px 6px; border-radius: 4px; font-weight: 700;">0</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem;">
+                            <span style="color: #fbbf24;"><i class="fa-solid fa-unlock-keyhole" style="margin-right: 4px;"></i> Ignored Pincode</span>
+                            <span id="stat-bypass-pincode" style="background: rgba(251, 191, 36, 0.2); color: #fbbf24; padding: 1px 6px; border-radius: 4px; font-weight: 700;">0</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem;">
+                            <span style="color: #fbbf24;"><i class="fa-solid fa-unlock-keyhole" style="margin-right: 4px;"></i> Ignored City</span>
+                            <span id="stat-bypass-city" style="background: rgba(251, 191, 36, 0.2); color: #fbbf24; padding: 1px 6px; border-radius: 4px; font-weight: 700;">0</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem;">
+                            <span style="color: #fbbf24;"><i class="fa-solid fa-unlock-keyhole" style="margin-right: 4px;"></i> Ignored State</span>
+                            <span id="stat-bypass-state" style="background: rgba(251, 191, 36, 0.2); color: #fbbf24; padding: 1px 6px; border-radius: 4px; font-weight: 700;">0</span>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -194,6 +226,19 @@
                 </div>
             </section>
         </main>
+    </div>
+
+    <!-- Mismatch Details Modal -->
+    <div id="mismatch-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modal-title">Active Mismatches</h3>
+                <span class="close-modal" onclick="closeMismatchModal()">&times;</span>
+            </div>
+            <div class="modal-body" id="modal-body">
+                <!-- Dynamic table/list will load here -->
+            </div>
+        </div>
     </div>
 
     <!-- Notification Container -->

@@ -61,7 +61,21 @@ function initRealTimeSync() {
     
     showToast("Connecting to Firebase Cloud Database...", "info");
     
+    let hasConnected = false;
+    
+    // Set a timeout of 4 seconds to fallback to offline if Firebase doesn't connect
+    const connectionTimeout = setTimeout(() => {
+        if (!hasConnected) {
+            console.warn("Firebase connection timed out. Running in offline mode.");
+            showToast("Cloud connection timed out. Running offline.", "warning");
+            renderFeed();
+        }
+    }, 4000);
+    
     db.ref('shared/workspace').on('value', (snapshot) => {
+        hasConnected = true;
+        clearTimeout(connectionTimeout);
+        
         const val = snapshot.val();
         if (val === null) {
             // If Firebase is completely empty, initialize it with current localStorage data
@@ -76,8 +90,11 @@ function initRealTimeSync() {
             renderFeed();
         }
     }, (error) => {
+        hasConnected = true;
+        clearTimeout(connectionTimeout);
         console.error("Firebase sync error:", error);
-        showToast("Firebase Sync failed. Running offline.", "warning");
+        showToast("Firebase Sync failed (Permission Denied). Running offline.", "warning");
+        renderFeed();
     });
 }
 
@@ -2511,6 +2528,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Run tracking statuses updates
     updateTrackingStatuses();
+    renderFeed(); // Render local data immediately so the UI is responsive!
     
     // Initialize Realtime Database Sync
     initRealTimeSync();

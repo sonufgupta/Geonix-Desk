@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Geonix Firestore Data Recovery Utility</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
+    <!-- FontAwesome for Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --bg-dark: #070913;
+            --bg-card: rgba(15, 18, 36, 0.75);
+            --primary: #6366f1;
+            --success: #10b981;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --border-color: rgba(255, 255, 255, 0.08);
+        }
+        body {
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            background: var(--bg-card);
+            backdrop-filter: blur(20px);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 40px;
+            max-width: 600px;
+            width: 100%;
+            text-align: center;
+            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.5), 0 0 30px rgba(99, 102, 241, 0.25);
+        }
+        h1 {
+            font-size: 1.8rem;
+            font-weight: 800;
+            margin-bottom: 12px;
+            color: white;
+        }
+        p {
+            color: var(--text-muted);
+            font-size: 0.95rem;
+            line-height: 1.6;
+            margin-bottom: 24px;
+        }
+        .status-box {
+            background: rgba(0, 0, 0, 0.25);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 20px;
+            text-align: left;
+            font-family: monospace;
+            font-size: 0.85rem;
+            height: 220px;
+            overflow-y: auto;
+            margin-bottom: 24px;
+            color: #34d399;
+            box-sizing: border-box;
+        }
+        .btn {
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-weight: 700;
+            font-size: 0.95rem;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            transition: all 0.2s ease;
+            box-shadow: 0 4px 15px rgba(99, 102, 241, 0.4);
+            font-family: inherit;
+        }
+        .btn:hover {
+            background: #4f46e5;
+            transform: translateY(-1px);
+        }
+        .btn:disabled {
+            background: #334155;
+            cursor: not-allowed;
+            box-shadow: none;
+            color: var(--text-muted);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div style="font-size: 3rem; color: var(--primary); margin-bottom: 16px;">
+            <i class="fa-solid fa-database"></i>
+        </div>
+        <h1>Geonix Data Recovery Utility</h1>
+        <p>This utility will fetch your old 48 invoice records from Firebase Cloud Firestore, restore them to your browser LocalStorage, and automatically sync them to your new Firebase Realtime Database.</p>
+        
+        <div class="status-box" id="status-box">
+            Click "Start Recovery" to connect and fetch data...
+        </div>
+        
+        <button class="btn" id="btn-start" onclick="startRecovery()">
+            <i class="fa-solid fa-circle-play"></i> Start Recovery
+        </button>
+    </div>
+
+    <!-- Firebase SDKs (Compat version for direct script loading) -->
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-database-compat.js"></script>
+
+    <script>
+        const firebaseConfig = {
+          apiKey: "AIzaSyAgyfmyHdr9dJxngBe3deUhHqLO4CFW-Go",
+          authDomain: "geonix-desk.firebaseapp.com",
+          databaseURL: "https://geonix-desk-default-rtdb.asia-southeast1.firebasedatabase.app",
+          projectId: "geonix-desk",
+          storageBucket: "geonix-desk.firebasestorage.app",
+          messagingSenderId: "246548457312",
+          appId: "1:246548457312:web:fc3b2da650e78481c56005",
+          measurementId: "G-G85Q4PDZ9G"
+        };
+
+        firebase.initializeApp(firebaseConfig);
+        const firestore = firebase.firestore();
+        const rtdb = firebase.database();
+        
+        const statusBox = document.getElementById('status-box');
+        const btnStart = document.getElementById('btn-start');
+        
+        function log(msg, color = '#34d399') {
+            statusBox.innerHTML += `<div style="color: ${color}; margin-top: 4px;">> ${msg}</div>`;
+            statusBox.scrollTop = statusBox.scrollHeight;
+        }
+
+        async function startRecovery() {
+            btnStart.disabled = true;
+            statusBox.innerHTML = '';
+            log("Connecting to Firebase Services...");
+            
+            try {
+                let records = null;
+                
+                // Attempt 1: Fetch shared/workspace document
+                log("Querying Firestore path 'shared/workspace'...");
+                const doc1 = await firestore.collection('shared').doc('workspace').get();
+                if (doc1.exists) {
+                    const data = doc1.data();
+                    log("Found document at 'shared/workspace'!");
+                    records = data.records || data.data || data;
+                } else {
+                    log("Document 'shared/workspace' not found.", "#f87171");
+                }
+
+                // Attempt 2: Fetch workspace/shared document if not found yet
+                if (!records) {
+                    log("Querying Firestore path 'workspace/shared'...");
+                    const doc2 = await firestore.collection('workspace').doc('shared').get();
+                    if (doc2.exists) {
+                        const data = doc2.data();
+                        log("Found document at 'workspace/shared'!");
+                        records = data.records || data.data || data;
+                    } else {
+                        log("Document 'workspace/shared' not found.", "#f87171");
+                    }
+                }
+                
+                // Attempt 3: Check collection 'records'
+                if (!records) {
+                    log("Searching for records collection documents...");
+                    const querySnapshot = await firestore.collection('records').get();
+                    if (!querySnapshot.empty) {
+                        log(`Found ${querySnapshot.size} records in collection!`);
+                        records = [];
+                        querySnapshot.forEach(doc => {
+                            records.push(doc.data());
+                        });
+                    } else {
+                        log("No records found in collection.", "#f87171");
+                    }
+                }
+
+                if (records) {
+                    // Normalize records to array
+                    let recordsArray = [];
+                    if (Array.isArray(records)) {
+                        recordsArray = records;
+                    } else if (typeof records === 'object') {
+                        if (records.records && Array.isArray(records.records)) {
+                            recordsArray = records.records;
+                        } else if (records.data && Array.isArray(records.data)) {
+                            recordsArray = records.data;
+                        } else {
+                            recordsArray = Object.values(records);
+                        }
+                    }
+                    
+                    // Filter valid records
+                    recordsArray = recordsArray.filter(r => r && (r.invoice_number || r.shipment_number));
+                    
+                    if (recordsArray.length > 0) {
+                        log(`Successfully retrieved ${recordsArray.length} records!`, '#60a5fa');
+                        
+                        // 1. Save to LocalStorage
+                        log("Writing records to browser LocalStorage...");
+                        localStorage.setItem('geonix_reconciled_db', JSON.stringify(recordsArray));
+                        
+                        // 2. Sync/Upload to new Realtime Database
+                        log("Uploading and syncing to Firebase Realtime Database...");
+                        await rtdb.ref('shared/workspace').set(recordsArray);
+                        
+                        log("Cloud sync complete!", '#60a5fa');
+                        log(`RECOVERY COMPLETED SUCCESSFULY! Recovered ${recordsArray.length} records.`, '#10b981');
+                        log("You can now close this page and reload your main dashboard page. All records are restored!", '#10b981');
+                    } else {
+                        log("No valid records (with invoice or shipment numbers) found.", "#f87171");
+                    }
+                } else {
+                    log("Could not find any database backup inside Firestore.", "#f87171");
+                }
+            } catch (err) {
+                log(`Recovery failed: ${err.message}`, '#f87171');
+                console.error(err);
+            }
+            
+            btnStart.disabled = false;
+        }
+    </script>
+</body>
+</html>

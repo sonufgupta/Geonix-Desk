@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Geonix Excel Data Restore Utility</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
+    <!-- FontAwesome for Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --bg-dark: #070913;
+            --bg-card: rgba(15, 18, 36, 0.75);
+            --primary: #6366f1;
+            --success: #10b981;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --border-color: rgba(255, 255, 255, 0.08);
+        }
+        body {
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            background: var(--bg-card);
+            backdrop-filter: blur(20px);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 40px;
+            max-width: 600px;
+            width: 100%;
+            text-align: center;
+            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.5), 0 0 30px rgba(99, 102, 241, 0.25);
+        }
+        h1 {
+            font-size: 1.8rem;
+            font-weight: 800;
+            margin-bottom: 12px;
+            color: white;
+        }
+        p {
+            color: var(--text-muted);
+            font-size: 0.95rem;
+            line-height: 1.6;
+            margin-bottom: 24px;
+        }
+        .file-input-container {
+            border: 2px dashed rgba(255, 255, 255, 0.15);
+            border-radius: 10px;
+            padding: 30px;
+            cursor: pointer;
+            background: rgba(255, 255, 255, 0.01);
+            transition: all 0.2s ease;
+            margin-bottom: 24px;
+        }
+        .file-input-container:hover {
+            border-color: var(--primary);
+            background: rgba(99, 102, 241, 0.03);
+        }
+        .status-box {
+            background: rgba(0, 0, 0, 0.25);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 20px;
+            text-align: left;
+            font-family: monospace;
+            font-size: 0.85rem;
+            height: 180px;
+            overflow-y: auto;
+            margin-bottom: 24px;
+            color: #34d399;
+            box-sizing: border-box;
+        }
+        .btn {
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-weight: 700;
+            font-size: 0.95rem;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            transition: all 0.2s ease;
+            box-shadow: 0 4px 15px rgba(99, 102, 241, 0.4);
+            font-family: inherit;
+        }
+        .btn:hover {
+            background: #4f46e5;
+            transform: translateY(-1px);
+        }
+        .btn:disabled {
+            background: #334155;
+            cursor: not-allowed;
+            box-shadow: none;
+            color: var(--text-muted);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div style="font-size: 3rem; color: #22c55e; margin-bottom: 16px;">
+            <i class="fa-solid fa-file-excel"></i>
+        </div>
+        <h1>Excel Database Restore Utility</h1>
+        <p>Select your previously exported Geonix MIS Excel file (e.g. <code>Mis Report  bhiwandi warehouse.xlsx</code>) to parse and restore your 48 invoice records back to LocalStorage and Firebase RTDB.</p>
+        
+        <div class="file-input-container" onclick="document.getElementById('excel-file').click()">
+            <i class="fa-solid fa-cloud-arrow-up" style="font-size: 2rem; color: var(--primary); margin-bottom: 8px;"></i>
+            <div style="font-weight: 600; font-size: 0.9rem;">Click to select Excel File</div>
+            <span style="font-size: 0.75rem; color: var(--text-muted);">(.xlsx formats supported)</span>
+            <input type="file" id="excel-file" accept=".xlsx" style="display: none;" onchange="handleFileSelect(event)">
+        </div>
+
+        <div class="status-box" id="status-box">
+            Waiting for Excel file selection...
+        </div>
+        
+        <button class="btn" id="btn-restore" onclick="processRestore()" disabled>
+            <i class="fa-solid fa-floppy-disk"></i> Restore Database
+        </button>
+    </div>
+
+    <!-- SheetJS (XLSX) CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    
+    <!-- Firebase SDKs -->
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-database-compat.js"></script>
+
+    <script>
+        const firebaseConfig = {
+          apiKey: "AIzaSyAgyfmyHdr9dJxngBe3deUhHqLO4CFW-Go",
+          authDomain: "geonix-desk.firebaseapp.com",
+          databaseURL: "https://geonix-desk-default-rtdb.asia-southeast1.firebasedatabase.app",
+          projectId: "geonix-desk",
+          storageBucket: "geonix-desk.firebasestorage.app",
+          messagingSenderId: "246548457312",
+          appId: "1:246548457312:web:fc3b2da650e78481c56005",
+          measurementId: "G-G85Q4PDZ9G"
+        };
+
+        firebase.initializeApp(firebaseConfig);
+        const rtdb = firebase.database();
+        
+        const statusBox = document.getElementById('status-box');
+        const btnRestore = document.getElementById('btn-restore');
+        
+        let parsedRecords = [];
+
+        function log(msg, color = '#34d399') {
+            statusBox.innerHTML += `<div style="color: ${color}; margin-top: 4px;">> ${msg}</div>`;
+            statusBox.scrollTop = statusBox.scrollHeight;
+        }
+
+        function handleFileSelect(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            statusBox.innerHTML = '';
+            log(`Selected file: ${file.name}`);
+            log("Reading spreadsheet data...");
+            
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const data = new Uint8Array(e.target.result);
+                    const workbook = XLSX.read(data, { type: 'array' });
+                    
+                    const firstSheetName = workbook.SheetNames[0];
+                    const worksheet = workbook.Sheets[firstSheetName];
+                    
+                    // Convert sheet to raw array of rows
+                    const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+                    log(`Loaded worksheet with ${rows.length} rows.`);
+                    
+                    // Locate headers row
+                    let headerRowIndex = -1;
+                    for (let i = 0; i < rows.length; i++) {
+                        const row = rows[i];
+                        if (row.includes('Customer Name') || row.includes('Customer') || row.includes('Invoice No') || row.includes('Invoice Number')) {
+                            headerRowIndex = i;
+                            break;
+                        }
+                    }
+                    
+                    if (headerRowIndex === -1) {
+                        log("ERROR: Could not locate table headers row. Please ensure this is a Geonix MIS report.", "#f87171");
+                        return;
+                    }
+                    
+                    const headers = rows[headerRowIndex];
+                    log(`Found headers at Row ${headerRowIndex + 1}: ${headers.join(', ')}`);
+                    
+                    parsedRecords = [];
+                    
+                    // Process data rows
+                    for (let i = headerRowIndex + 1; i < rows.length; i++) {
+                        const row = rows[i];
+                        if (!row || row.length === 0) continue;
+                        
+                        // Check if it's the Total Summary row
+                        if (row.includes('Total Summary') || row.join('').includes('TotalSummary')) {
+                            log("Reached end of data (Summary Row).");
+                            break;
+                        }
+                        
+                        // Create a map of headers to cell values
+                        const rowData = {};
+                        headers.forEach((header, index) => {
+                            rowData[header] = row[index] !== undefined ? row[index] : null;
+                        });
+                        
+                        const customer = rowData['Customer Name'] || rowData['Customer'] || 'Unknown Customer';
+                        const invoiceNo = rowData['Invoice No'] || rowData['Invoice Number'];
+                        const shipmentNo = rowData['Track ID / Vehicle#'] || rowData['Track ID'] || rowData['Shipment No'] || rowData['Shipment Number'];
+                        
+                        // Skip completely empty rows
+                        if (!invoiceNo && !shipmentNo) continue;
+                        
+                        // Determine status
+                        let status = 'Matched';
+                        if (invoiceNo && !shipmentNo) {
+                            status = 'Pending Shipment';
+                        } else if (!invoiceNo && shipmentNo) {
+                            status = 'Pending Invoice';
+                        }
+                        
+                        // Reconstruct matching object structure
+                        const record = {
+                            id: 'rec-' + Date.now() + '-' + Math.floor(Math.random() * 10000),
+                            customer_name: customer,
+                            invoice_customer_name: invoiceNo ? customer : null,
+                            shipment_customer_name: shipmentNo ? customer : null,
+                            gstin: 'N/A',
+                            pan: 'N/A',
+                            phone: 'N/A',
+                            ship_to_address: 'N/A',
+                            ship_to_city: rowData['Ship-to City'] || rowData['City'] || 'N/A',
+                            ship_to_state: rowData['Ship-to State'] || rowData['State'] || 'N/A',
+                            ship_to_pincode: rowData['PINCODE'] || rowData['Pincode'] || 'N/A',
+                            invoice_address: 'N/A',
+                            invoice_city: rowData['Ship-to City'] || rowData['City'] || 'N/A',
+                            invoice_state: rowData['Ship-to State'] || rowData['State'] || 'N/A',
+                            invoice_pincode: rowData['PINCODE'] || rowData['Pincode'] || 'N/A',
+                            shipment_address: 'N/A',
+                            shipment_city: rowData['Ship-to City'] || rowData['City'] || 'N/A',
+                            shipment_state: rowData['Ship-to State'] || rowData['State'] || 'N/A',
+                            shipment_pincode: rowData['PINCODE'] || rowData['Pincode'] || 'N/A',
+                            
+                            // Invoice
+                            invoice_number: invoiceNo || null,
+                            invoice_date: rowData['Invoice Date'] || 'N/A',
+                            due_date: 'N/A',
+                            eway_bill: 'N/A',
+                            invoice_amount: rowData['Total Amount (₹)'] || rowData['Total Amount'] || rowData['Amount'] || 0,
+                            invoice_items: [],
+                            invoice_qty: rowData['Invoice Qty'] !== null ? parseInt(rowData['Invoice Qty']) : null,
+                            invoice_rate: rowData['Rate (₹)'] || rowData['Rate'] || 'N/A',
+                            sales_person: 'N/A',
+                            
+                            // Shipment
+                            shipment_number: shipmentNo || null,
+                            shipment_date: rowData['Shipment Date'] || 'N/A',
+                            carrier: rowData['Carrier Name'] || rowData['Carrier'] || 'N/A',
+                            tracking_number: rowData['Track ID / Vehicle#'] || rowData['Track ID'] || 'N/A',
+                            tracking_status: rowData['Tracking Status'] || 'In Transit',
+                            delivery_timestamp: rowData['Delivered Date'] || null,
+                            sales_order_number: rowData['Sales Order#'] || 'N/A',
+                            order_date: rowData['Order Date'] || 'N/A',
+                            shipment_qty: rowData['Shipment Qty'] !== null ? parseInt(rowData['Shipment Qty']) : null,
+                            qty_match: null,
+                            boxes: rowData['Box Count'] !== null ? parseInt(rowData['Box Count']) : 1,
+                            weight: rowData['Weight (KG)'] !== null ? parseFloat(rowData['Weight (KG)']) : 0.0,
+                            shipment_items: [],
+                            
+                            bypassed_rules: [],
+                            status: status,
+                            timestamp: new Date().toISOString()
+                        };
+                        
+                        // Calculate Qty Match
+                        if (record.invoice_qty !== null && record.shipment_qty !== null) {
+                            record.qty_match = record.invoice_qty === record.shipment_qty;
+                        }
+                        
+                        parsedRecords.push(record);
+                    }
+                    
+                    log(`Parsed ${parsedRecords.length} records from Excel file. Ready to Restore!`, '#60a5fa');
+                    btnRestore.disabled = false;
+                    
+                } catch(err) {
+                    log(`Error reading sheet: ${err.message}`, '#f87171');
+                    console.error(err);
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        async function processRestore() {
+            if (parsedRecords.length === 0) return;
+            btnRestore.disabled = true;
+            
+            log("Restoring records to browser LocalStorage...");
+            localStorage.setItem('geonix_reconciled_db', JSON.stringify(parsedRecords));
+            
+            log("Uploading records to Firebase Realtime Database cloud...");
+            try {
+                await rtdb.ref('shared/workspace').set(parsedRecords);
+                log("Cloud Database synchronized successfully!", '#60a5fa');
+                log(`RESTORE COMPLETE! Restored ${parsedRecords.length} reconciled records.`, '#10b981');
+                log("You can now close this page and reload your dashboard page to see your 48 invoices!", '#10b981');
+            } catch (err) {
+                log(`Firebase Sync failed: ${err.message}`, '#f87171');
+                log("LocalStorage was successfully updated, but cloud sync failed. Dashboard will run offline.", '#fbbf24');
+            }
+            btnRestore.disabled = false;
+        }
+    </script>
+</body>
+</html>
