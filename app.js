@@ -101,7 +101,16 @@ function loadMatchingRules() {
     const savedRules = localStorage.getItem('geonix_matching_rules');
     if (savedRules) {
         try {
-            matchingRules = JSON.parse(savedRules);
+            const parsed = JSON.parse(savedRules);
+            if (parsed && typeof parsed === 'object') {
+                matchingRules = {
+                    customerName: parsed.customerName !== false,
+                    qty: parsed.qty !== false,
+                    pincode: parsed.pincode !== false,
+                    city: parsed.city !== false,
+                    state: parsed.state !== false
+                };
+            }
         } catch (e) {
             console.error("Error parsing matching rules", e);
         }
@@ -1557,6 +1566,76 @@ async function updateTrackingStatuses() {
         saveLocalRecords(records);
         renderFeed();
     }
+}
+
+// Find and returns any active rule mismatches for unmatched records of the same customer
+function getMismatchDetailsForCard(row, records) {
+    if (row.status === 'Matched') return null;
+    
+    const targetType = row.status === 'Pending Shipment' ? 'Pending Invoice' : 'Pending Shipment';
+    
+    // Find candidates of the opposite type
+    const candidates = records.filter(r => r.status === targetType);
+    if (candidates.length === 0) return null;
+    
+    // Filter candidates by customer name if customerName match rule is enabled
+    let filtered = candidates;
+    if (matchingRules.customerName) {
+        filtered = candidates.filter(r => r.customer_name === row.customer_name);
+    }
+    
+    if (filtered.length === 0) return null;
+    
+    // For each candidate, calculate mismatches for active rules
+    let bestMismatchList = null;
+    let minMismatches = 999;
+    
+    filtered.forEach(cand => {
+        const mismatches = [];
+        
+        // 1. Customer Name Check
+        if (matchingRules.customerName && row.customer_name !== cand.customer_name) {
+            mismatches.push({ rule: 'Customer Name', label: 'Name Mismatch', details: `${row.customer_name} vs ${cand.customer_name}` });
+        }
+        
+        // 2. Qty Check
+        const rowQty = row.invoice_qty !== null ? row.invoice_qty : row.shipment_qty;
+        const candQty = cand.invoice_qty !== null ? cand.invoice_qty : cand.shipment_qty;
+        if (matchingRules.qty && rowQty !== candQty) {
+            mismatches.push({ rule: 'Quantity', label: 'Qty Mismatch', details: `${rowQty} vs ${candQty}` });
+        }
+        
+        // 3. Pincode Check
+        const rowPin = row.invoice_pincode || row.shipment_pincode || row.ship_to_pincode || 'N/A';
+        const candPin = cand.invoice_pincode || cand.shipment_pincode || cand.ship_to_pincode || 'N/A';
+        const pinMatches = rowPin !== 'N/A' && candPin !== 'N/A' && rowPin === candPin;
+        if (matchingRules.pincode && !pinMatches) {
+            mismatches.push({ rule: 'Pincode', label: 'Pincode Mismatch', details: `${rowPin} vs ${candPin}` });
+        }
+        
+        // 4. City Check
+        const rowCity = (row.invoice_city || row.shipment_city || row.ship_to_city || '').trim().toUpperCase();
+        const candCity = (cand.invoice_city || cand.shipment_city || cand.ship_to_city || '').trim().toUpperCase();
+        const cityMatches = rowCity !== '' && candCity !== '' && rowCity === candCity;
+        if (matchingRules.city && !cityMatches) {
+            mismatches.push({ rule: 'City', label: 'City Mismatch', details: `${rowCity} vs ${candCity}` });
+        }
+        
+        // 5. State Check
+        const rowState = (row.invoice_state || row.shipment_state || row.ship_to_state || '').trim().toUpperCase();
+        const candState = (cand.invoice_state || cand.shipment_state || cand.ship_to_state || '').trim().toUpperCase();
+        const stateMatches = rowState !== '' && candState !== '' && rowState === candState;
+        if (matchingRules.state && !stateMatches) {
+            mismatches.push({ rule: 'State', label: 'State Mismatch', details: `${rowState} vs ${candState}` });
+        }
+        
+        if (mismatches.length < minMismatches) {
+            minMismatches = mismatches.length;
+            bestMismatchList = mismatches;
+        }
+    });
+    
+    return bestMismatchList && bestMismatchList.length > 0 ? bestMismatchList : null;
 }
 
 // Render dynamic Feed Dashboard
