@@ -318,10 +318,122 @@ function isolateShipToAddress(block, customerName) {
     return block;
 }
 
+// Helper to extract customer name with high robustness from invoice/shipment text
+function extractCustomerNameFromText(text, isInvoice) {
+    const textNoSeparators = text.replace(/\|\|\|/g, ' ');
+    
+    // 1. Try known customers first (case-insensitive match)
+    const knownCustomers = [
+        'SRI SAI LAXMI CABLES', 
+        'BALAJI ELECTRONICS', 
+        'KRISHNA ENTERPRISES', 
+        'DYNAMIC INFOTECH', 
+        'SABARMATI SYSTEMS', 
+        'AANIKA INFOTECH', 
+        'SHRI BALAJI CABLE TRONICS', 
+        'SKYLINE SYSTEM AND TECHNOLOGIES'
+    ];
+    for (const customer of knownCustomers) {
+        if (textNoSeparators.toUpperCase().includes(customer)) {
+            return customer;
+        }
+    }
+    
+    // 2. Look for lines starting with "Bill To" or "Ship To" blocks
+    const lines = text.split(/\r?\n/).map(l => l.trim());
+    let startIndex = -1;
+    for (let i = 0; i < lines.length; i++) {
+        const lineUpper = lines[i].toUpperCase();
+        if (lineUpper.startsWith('BILL TO') || lineUpper.startsWith('SHIP TO') || 
+            lineUpper.startsWith('BILL-TO') || lineUpper.startsWith('SHIP-TO')) {
+            startIndex = i;
+            break;
+        }
+    }
+    
+    if (startIndex !== -1) {
+        // Look at the lines immediately following the start header
+        for (let i = startIndex + 1; i < Math.min(startIndex + 6, lines.length); i++) {
+            let line = lines[i].trim();
+            if (!line) continue;
+            
+            // Clean side-by-side or duplicate text
+            line = cleanSideBySideText(line, isInvoice ? 'right' : 'left');
+            line = cleanSideBySideText(line, isInvoice ? 'left' : 'right');
+            line = line.trim();
+            
+            const lineUpper = line.toUpperCase();
+            // Skip lines that are just headers, metadata, or addresses (contain numbers/pincodes/GSTIN/PAN/Phone)
+            if (lineUpper.startsWith('BILL TO') || lineUpper.startsWith('SHIP TO') || 
+                lineUpper.startsWith('BILL-TO') || lineUpper.startsWith('SHIP-TO') ||
+                lineUpper.includes('INVOICE') || lineUpper.includes('DATE') || 
+                lineUpper.includes('GSTIN') || lineUpper.includes('PAN') ||
+                lineUpper.includes('+91') || lineUpper.match(/^\d+$/) ||
+                lineUpper.includes('ROAD') || lineUpper.includes('STREET') ||
+                lineUpper.includes('FLOOR') || lineUpper.includes('BUILDING') ||
+                lineUpper.includes('GALA NO') || lineUpper.includes('H.NO')) {
+                continue;
+            }
+            
+            const cleaned = cleanDuplicatedName(line);
+            if (cleaned && cleaned.length > 3 && cleaned.toUpperCase() !== 'UNKNOWN CUSTOMER') {
+                return cleaned;
+            }
+        }
+    }
+    
+    // 3. Fallback regex match with expanded suffix pattern
+    const suffixPattern = '(?:CABLES|ELECTRONICS|ENTERPRISES|INFOTECH|SYSTEMS|LTD|PVT|CO|CORP|TRONICS|TECHNOLOGIES|TECHNOLOGY|SYSTEM|TECH|SERVICES|SERVICE|COMMUNICATION|COMMUNICATIONS|NETWORKS|NETWORK|SOLUTIONS|SOLUTION|GLOBAL|RETAIL|SALES|DISTRIBUTORS|DISTRIBUTOR|LIMITED|PRIVATE|PVT LTD|PRIVATE LIMITED)';
+    const billToRegex = new RegExp('Bill[\\s\\-]?To\\s*[:\\-]?\\s*([A-Z0-9\\s&.\\-]{4,}' + suffixPattern + ')', 'i');
+    const shipToRegex = new RegExp('Ship[\\s\\-]?To\\s*[:\\-]?\\s*([A-Z0-9\\s&.\\-]{4,}' + suffixPattern + ')', 'i');
+    
+    const billMatch = textNoSeparators.match(billToRegex);
+    const shipMatch = textNoSeparators.match(shipToRegex);
+    
+    let candidateName = '';
+    if (billMatch && billMatch[1]) {
+        candidateName = billMatch[1].trim();
+    } else if (shipMatch && shipMatch[1]) {
+        candidateName = shipMatch[1].trim();
+    }
+    
+    if (!candidateName) {
+        // Try loose block match if regex fails
+        const billBlockMatch = text.match(/Bill[\s\-]?To\s*[:\-]?\s*([^]+?)(?=\s*(?:\n\s*#\s|\s+#\s|Item & Description|Bank Details|Terms|\n\s*Ship[\s\-]?To|$))/i);
+        const shipBlockMatch = text.match(/Ship[\s\-]?To\s*[:\-]?\s*([^]+?)(?=\s*(?:\n\s*#\s|\s+#\s|Item & Description|Bank Details|Terms|\n\s*Bill[\s\-]?To|$))/i);
+        
+        if (billBlockMatch && billBlockMatch[1]) {
+            const billLines = billBlockMatch[1].trim().split(/\r?\n/)
+                .map(l => cleanSideBySideText(l, 'left'))
+                .map(l => l.trim())
+                .filter(l => l.length > 0);
+            if (billLines.length > 0) {
+                candidateName = billLines[0];
+            }
+        }
+        if (!candidateName && shipBlockMatch && shipBlockMatch[1]) {
+            const shipLines = shipBlockMatch[1].trim().split(/\r?\n/)
+                .map(l => cleanSideBySideText(l, isInvoice ? 'right' : 'left'))
+                .map(l => l.trim())
+                .filter(l => l.length > 0);
+            if (shipLines.length > 0) {
+                candidateName = shipLines[0];
+            }
+        }
+    }
+    
+    if (candidateName) {
+        return cleanDuplicatedName(candidateName);
+    }
+    
+    return 'Unknown Customer';
+}
+
 // Advanced Document Details Parser
 function parseDocumentText(text) {
-    const isInvoice = text.includes('TAX INVOICE') || text.includes('Invoice Number');
-    const isShipment = text.includes('SHIPMENT ORDER') || text.includes('Shipment Order#');
+    const textUpper = text.toUpperCase();
+    const isInvoice = textUpper.includes('TAX INVOICE') || textUpper.includes('INVOICE NUMBER') || textUpper.includes('INVOICE NO');
+    const isShipment = textUpper.includes('SHIPMENT ORDER') || textUpper.includes('SHIPMENT ORDER#') || textUpper.includes('SHIPPING ORDER');
 
     const result = {
         type: isInvoice ? 'invoice' : (isShipment ? 'shipment' : 'unknown'),
@@ -333,70 +445,8 @@ function parseDocumentText(text) {
     // Strip column separator for general regex parsing to prevent breaking item/qty matches
     const textNoSeparators = text.replace(/\|\|\|/g, ' ');
 
-    // 1. Get Customer Name
-    const knownCustomers = [
-        'SRI SAI LAXMI CABLES', 
-        'BALAJI ELECTRONICS', 
-        'KRISHNA ENTERPRISES', 
-        'DYNAMIC INFOTECH', 
-        'SABARMATI SYSTEMS', 
-        'AANIKA INFOTECH', 
-        'SHRI BALAJI CABLE TRONICS', 
-        'SKYLINE SYSTEM AND TECHNOLOGIES'
-    ];
-    let foundCustomer = '';
-    for (const customer of knownCustomers) {
-        if (textNoSeparators.toUpperCase().includes(customer)) {
-            foundCustomer = customer;
-            break;
-        }
-    }
-    if (foundCustomer) {
-        result.customer_name = foundCustomer;
-    } else {
-        // Try regex match using suffix patterns in Bill To or Ship To (strictly matching words, no address punctuation)
-        const billToRegex = /Bill[\s\-]?To\s*[:\-]?\s*([A-Z0-9\s&.\-]{4,}(?:CABLES|ELECTRONICS|ENTERPRISES|INFOTECH|SYSTEMS|LTD|PVT|CO|CORP|TRONICS|TECHNOLOGIES|TECHNOLOGY|SYSTEM|TECH|SERVICES|SERVICE|COMMUNICATION|COMMUNICATIONS|NETWORKS|NETWORK|SOLUTIONS|SOLUTION|GLOBAL|RETAIL|SALES|DISTRIBUTORS|DISTRIBUTOR))/i;
-        const shipToRegex = /Ship[\s\-]?To\s*[:\-]?\s*([A-Z0-9\s&.\-]{4,}(?:CABLES|ELECTRONICS|ENTERPRISES|INFOTECH|SYSTEMS|LTD|PVT|CO|CORP|TRONICS|TECHNOLOGIES|TECHNOLOGY|SYSTEM|TECH|SERVICES|SERVICE|COMMUNICATION|COMMUNICATIONS|NETWORKS|NETWORK|SOLUTIONS|SOLUTION|GLOBAL|RETAIL|SALES|DISTRIBUTORS|DISTRIBUTOR))/i;
-        
-        const billMatch = textNoSeparators.match(billToRegex);
-        const shipMatch = textNoSeparators.match(shipToRegex);
-        
-        let candidateName = '';
-        if (billMatch && billMatch[1]) {
-            candidateName = billMatch[1].trim();
-        } else if (shipMatch && shipMatch[1]) {
-            candidateName = shipMatch[1].trim();
-        }
-        
-        if (!candidateName) {
-            // Robust Fallback: extract the first line of the Bill To or Ship To block (matching original text coordinates)
-            const billBlockMatch = text.match(/Bill[\s\-]?To\s*[:\-]?\s*([^]+?)(?=\s*(?:\n\s*#\s|\s+#\s|Item & Description|Bank Details|Terms|\n\s*Ship[\s\-]?To|$))/i);
-            const shipBlockMatch = text.match(/Ship[\s\-]?To\s*[:\-]?\s*([^]+?)(?=\s*(?:\n\s*#\s|\s+#\s|Item & Description|Bank Details|Terms|\n\s*Bill[\s\-]?To|$))/i);
-            
-            if (billBlockMatch && billBlockMatch[1]) {
-                const billLines = billBlockMatch[1].trim().split(/\r?\n/)
-                    .map(l => cleanSideBySideText(l, 'left'))
-                    .map(l => l.trim())
-                    .filter(l => l.length > 0);
-                if (billLines.length > 0) {
-                    candidateName = billLines[0];
-                }
-            }
-            if (!candidateName && shipBlockMatch && shipBlockMatch[1]) {
-                const shipLines = shipBlockMatch[1].trim().split(/\r?\n/)
-                    .map(l => cleanSideBySideText(l, isInvoice ? 'right' : 'left'))
-                    .map(l => l.trim())
-                    .filter(l => l.length > 0);
-                if (shipLines.length > 0) {
-                    candidateName = shipLines[0];
-                }
-            }
-        }
-
-        if (candidateName) {
-            result.customer_name = cleanDuplicatedName(candidateName);
-        }
-    }
+    // 1. Get Customer Name using our high-robustness extractor
+    result.customer_name = extractCustomerNameFromText(text, isInvoice);
 
     // 2. Parse Items & Quantities
     const cleanText = textNoSeparators.replace(/\s+/g, ' ');
