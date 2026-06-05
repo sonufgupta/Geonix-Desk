@@ -39,113 +39,47 @@ function showToast(message, type = 'success') {
     }, 4500);
 }
 
-// Database Layer using LocalStorage & Firebase Cloud Real-Time Sync
+// Database Layer using LocalStorage
 function getLocalRecords() {
     const data = localStorage.getItem('geonix_reconciled_db');
     return data ? JSON.parse(data) : [];
 }
 
-// Save locally and push to Realtime Database shared path
+// Save locally and sync to Firebase Realtime Database
 function saveLocalRecords(records) {
     localStorage.setItem('geonix_reconciled_db', JSON.stringify(records));
-    
-    db.ref('shared/workspace').set({ records: records })
-        .catch(error => {
-            console.error("Realtime DB cloud sync write error:", error);
-            showToast("Cloud sync failed. Local copy saved.", "warning");
+    if (typeof db !== 'undefined' && db) {
+        db.ref('shared/workspace').set(records).catch(err => {
+            console.error('Firebase save error:', err);
         });
+    }
 }
 
-// Initialize Real-Time Sync listener
+// Initialize Realtime Database Sync listener
 function initRealTimeSync() {
-    showToast('Connecting to Firebase Real-time Cloud...', 'info');
+    if (typeof db === 'undefined' || !db) return;
+    
+    showToast("Connecting to Firebase Cloud Database...", "info");
     
     db.ref('shared/workspace').on('value', (snapshot) => {
-        const data = snapshot.val();
-        if (data && data.records !== undefined) {
-            const remoteRecords = data.records;
-            localStorage.setItem('geonix_reconciled_db', JSON.stringify(remoteRecords));
-            renderFeed();
-            showToast('Real-time database updated.', 'success');
+        const val = snapshot.val();
+        if (val === null) {
+            // If Firebase is completely empty, initialize it with current localStorage data
+            const local = localStorage.getItem('geonix_reconciled_db');
+            const localRecords = local ? JSON.parse(local) : [];
+            if (localRecords.length > 0) {
+                db.ref('shared/workspace').set(localRecords);
+            }
         } else {
-            // First time setup: If Realtime DB is empty, initialize it with current local storage cache
-            const localData = localStorage.getItem('geonix_reconciled_db');
-            const initialRecords = localData ? JSON.parse(localData) : [];
-            db.ref('shared/workspace').set({ records: initialRecords })
-                .then(() => {
-                    showToast('Initialized Realtime Database.', 'success');
-                    renderFeed();
-                })
-                .catch(err => {
-                    console.error("Realtime DB init error:", err);
-                    renderFeed();
-                });
+            // Sync to LocalStorage and re-render dashboard UI
+            localStorage.setItem('geonix_reconciled_db', JSON.stringify(val));
+            renderFeed();
         }
     }, (error) => {
-        console.error("Realtime DB sync error:", error);
-        showToast("Cloud connection error. Running offline.", "warning");
-        renderFeed();
+        console.error("Firebase sync error:", error);
+        showToast("Firebase Sync failed. Running offline.", "warning");
     });
 }
-
-// Matching Rules State
-let matchingRules = {
-    customerName: true,
-    qty: true,
-    pincode: true,
-    city: true,
-    state: true
-};
-
-function loadMatchingRules() {
-    const savedRules = localStorage.getItem('geonix_matching_rules');
-    if (savedRules) {
-        try {
-            const parsed = JSON.parse(savedRules);
-            if (parsed && typeof parsed === 'object') {
-                matchingRules = {
-                    customerName: parsed.customerName !== false,
-                    qty: parsed.qty !== false,
-                    pincode: parsed.pincode !== false,
-                    city: parsed.city !== false,
-                    state: parsed.state !== false
-                };
-            }
-        } catch (e) {
-            console.error("Error parsing matching rules", e);
-        }
-    }
-    
-    // Set checkbox states in UI
-    const elName = document.getElementById('rule-customer-name');
-    const elQty = document.getElementById('rule-qty');
-    const elPin = document.getElementById('rule-pincode');
-    const elCity = document.getElementById('rule-city');
-    const elState = document.getElementById('rule-state');
-    
-    if (elName) elName.checked = matchingRules.customerName;
-    if (elQty) elQty.checked = matchingRules.qty;
-    if (elPin) elPin.checked = matchingRules.pincode;
-    if (elCity) elCity.checked = matchingRules.city;
-    if (elState) elState.checked = matchingRules.state;
-}
-
-function saveMatchingRules() {
-    matchingRules = {
-        customerName: document.getElementById('rule-customer-name')?.checked !== false,
-        qty: document.getElementById('rule-qty')?.checked !== false,
-        pincode: document.getElementById('rule-pincode')?.checked !== false,
-        city: document.getElementById('rule-city')?.checked !== false,
-        state: document.getElementById('rule-state')?.checked !== false
-    };
-    localStorage.setItem('geonix_matching_rules', JSON.stringify(matchingRules));
-    showToast("Reconciliation rules updated. Re-evaluating database...", "info");
-    reRunReconciliation();
-}
-
-// Start Matching Rules & Real-Time Sync
-loadMatchingRules();
-initRealTimeSync();
 
 // Extract PDF text content
 // Extract PDF text content (preserving structural layout line breaks!)
@@ -329,6 +263,23 @@ function cleanDuplicatedName(name) {
     
     return name;
 }
+
+function normalizeCustomerName(name) {
+    if (!name) return '';
+    return name.toUpperCase()
+        .replace(/[^A-Z0-9]/g, ' ') // replace punctuation/special chars with space
+        .replace(/\b(PVT|LTD|PRIVATE|LIMITED|CO|CORP|COMPANY|INTERNATIONAL|PLTD)\b/g, '') // remove common suffixes
+        .replace(/\s+/g, '') // remove all spaces
+        .trim();
+}
+
+function isLooseCustomerNameMatch(name1, name2) {
+    const n1 = normalizeCustomerName(name1);
+    const n2 = normalizeCustomerName(name2);
+    if (!n1 || !n2) return false;
+    return n1 === n2 || n1.includes(n2) || n2.includes(n1);
+}
+
 
 // Helper function to isolate Ship-To address from vertically merged address blocks
 function isolateShipToAddress(block, customerName) {
@@ -895,45 +846,77 @@ function checkMatchingRules(r, parsedDoc, isInvoiceUpload) {
     const isPendingDoc = isInvoiceUpload ? (r.status === 'Pending Invoice') : (r.status === 'Pending Shipment');
     if (!isPendingDoc) return { match: false, reason: '' };
     
-    // Check 1: Customer Name
-    const nameMatches = !matchingRules.customerName || (r.customer_name === parsedDoc.customer_name);
+    // Check if these two were previously matched and have bypassed rules
+    let isPrevMatch = false;
+    let activeBypassed = [];
     
-    // Check 2: Quantity
-    const docQty = parsedDoc.total_qty;
-    const recQty = isInvoiceUpload ? r.shipment_qty : r.invoice_qty;
-    const qtyMatches = !matchingRules.qty || (recQty === docQty);
-    
-    // Check 3: Pincode
-    const pinMatches = !matchingRules.pincode || (
-                       r.ship_to_pincode !== 'N/A' && 
-                       parsedDoc.ship_to_pincode !== 'N/A' && 
-                       r.ship_to_pincode === parsedDoc.ship_to_pincode);
-                       
-    // Check 4: City
-    const recCity = (r.ship_to_city || '').trim().toUpperCase();
-    const docCity = (parsedDoc.ship_to_city || '').trim().toUpperCase();
-    const cityMatches = !matchingRules.city || (recCity !== '' && docCity !== '' && recCity === docCity);
-    
-    // Check 5: State
-    const recState = (r.ship_to_state || '').trim().toUpperCase();
-    const docState = (parsedDoc.ship_to_state || '').trim().toUpperCase();
-    const stateMatches = !matchingRules.state || (recState !== '' && docState !== '' && recState === docState);
-    
-    // Strict Match: Customer, Quantity, Pincode, City, and State must all match at the same time
-    if (nameMatches && qtyMatches && pinMatches && cityMatches && stateMatches) {
-        return { match: true, reason: 'Matched' };
+    if (isInvoiceUpload) {
+        // r is Pending Invoice (has shipment), parsedDoc is new Invoice
+        if (parsedDoc.previously_matched_to && parsedDoc.previously_matched_to === r.shipment_number) {
+            isPrevMatch = true;
+            activeBypassed = parsedDoc.bypassed_rules || [];
+        }
+    } else {
+        // r is Pending Shipment (has invoice), parsedDoc is new Shipment
+        if (parsedDoc.previously_matched_to && parsedDoc.previously_matched_to === r.invoice_number) {
+            isPrevMatch = true;
+            activeBypassed = parsedDoc.bypassed_rules || [];
+        }
     }
     
-    // Return mismatch warning details if Customer Name matches but any active strict matching criteria fails
-    if (r.customer_name === parsedDoc.customer_name) {
-        let mismatchDetails = [];
-        if (matchingRules.qty && !qtyMatches) mismatchDetails.push(`Qty Mismatch (${recQty} vs ${docQty})`);
-        if (matchingRules.pincode && !pinMatches) mismatchDetails.push(`Pincode Mismatch (${r.ship_to_pincode} vs ${parsedDoc.ship_to_pincode})`);
-        if (matchingRules.city && !cityMatches) mismatchDetails.push(`City Mismatch (${recCity} vs ${docCity})`);
-        if (matchingRules.state && !stateMatches) mismatchDetails.push(`State Mismatch (${recState} vs ${docState})`);
-        if (mismatchDetails.length > 0) {
-            return { match: false, reason: mismatchDetails.join(', ') };
+    // Also include any bypasses directly defined on the pending record r
+    if (r.bypassed_rules && Array.isArray(r.bypassed_rules)) {
+        if (isLooseCustomerNameMatch(r.customer_name, parsedDoc.customer_name)) {
+            activeBypassed = [...new Set([...activeBypassed, ...r.bypassed_rules])];
         }
+    }
+    
+    // Also include any bypasses directly defined on the new document (if from a split state or similar)
+    if (parsedDoc.bypassed_rules && Array.isArray(parsedDoc.bypassed_rules) && !isPrevMatch) {
+        if (isLooseCustomerNameMatch(r.customer_name, parsedDoc.customer_name)) {
+            activeBypassed = [...new Set([...activeBypassed, ...parsedDoc.bypassed_rules])];
+        }
+    }
+    
+    // Check 1: Customer Name
+    const customerBypassed = activeBypassed.includes('customer');
+    const nameMatches = customerBypassed || (r.customer_name === parsedDoc.customer_name);
+    
+    // Check 2: Quantity
+    const qtyBypassed = activeBypassed.includes('qty');
+    const docQty = parsedDoc.total_qty;
+    const recQty = isInvoiceUpload ? r.shipment_qty : r.invoice_qty;
+    const qtyMatches = qtyBypassed || (recQty === docQty);
+    
+    // Check 3: Pincode
+    const pinBypassed = activeBypassed.includes('pincode');
+    const rowPin = r.ship_to_pincode || 'N/A';
+    const docPin = parsedDoc.ship_to_pincode || 'N/A';
+    const pinMatches = pinBypassed || (rowPin !== 'N/A' && docPin !== 'N/A' && rowPin === docPin);
+                       
+    // Check 4: City
+    const cityBypassed = activeBypassed.includes('city');
+    const recCity = (r.ship_to_city || '').trim().toUpperCase();
+    const docCity = (parsedDoc.ship_to_city || '').trim().toUpperCase();
+    const cityMatches = cityBypassed || (recCity !== '' && docCity !== '' && recCity === docCity);
+    
+    // Check 5: State
+    const stateBypassed = activeBypassed.includes('state');
+    const recState = (r.ship_to_state || '').trim().toUpperCase();
+    const docState = (parsedDoc.ship_to_state || '').trim().toUpperCase();
+    const stateMatches = stateBypassed || (recState !== '' && docState !== '' && recState === docState);
+    
+    if (nameMatches && qtyMatches && pinMatches && cityMatches && stateMatches) {
+        return { match: true, reason: 'Matched', bypassed_rules: activeBypassed };
+    }
+    
+    if (nameMatches) {
+        let mismatchDetails = [];
+        if (!qtyMatches) mismatchDetails.push(`Qty Mismatch (${recQty} vs ${docQty})`);
+        if (!pinMatches) mismatchDetails.push(`Pincode Mismatch (${rowPin} vs ${docPin})`);
+        if (!cityMatches) mismatchDetails.push(`City Mismatch (${recCity} vs ${docCity})`);
+        if (!stateMatches) mismatchDetails.push(`State Mismatch (${recState} vs ${docState})`);
+        return { match: false, reason: mismatchDetails.join(', ') };
     }
     
     return { match: false, reason: '' };
@@ -948,14 +931,16 @@ function reconcileDocument(parsedDoc) {
             showToast(`Duplicate: Invoice ${parsedDoc.invoice_number} already exists!`, 'warning');
             return;
         }
-
+        
         // Look for matching shipment order waiting for invoice (strictly matching Customer, Pincode, Qty & Address)
         let matchIndex = -1;
         let warningReason = '';
+        let checkResult = null;
         for (let i = 0; i < records.length; i++) {
             const check = checkMatchingRules(records[i], parsedDoc, true);
             if (check.match) {
                 matchIndex = i;
+                checkResult = check;
                 break;
             } else if (check.reason) {
                 warningReason = check.reason;
@@ -988,6 +973,7 @@ function reconcileDocument(parsedDoc) {
             
             // Quantity match check
             match.qty_match = match.invoice_qty === match.shipment_qty;
+            match.bypassed_rules = checkResult.bypassed_rules || [];
             match.status = 'Matched';
             
             showToast(`Matched Invoice ${parsedDoc.invoice_number} with Shipment ${match.shipment_number}! Qty Verification: ${match.qty_match ? 'TRUE' : 'FALSE (Qty Mismatch)'}`, 'success');
@@ -1041,6 +1027,7 @@ function reconcileDocument(parsedDoc) {
                 boxes: null,
                 weight: null,
                 shipment_items: null,
+                bypassed_rules: parsedDoc.bypassed_rules || [],
                 
                 status: 'Pending Shipment',
                 timestamp: new Date().toISOString()
@@ -1052,14 +1039,16 @@ function reconcileDocument(parsedDoc) {
             showToast(`Duplicate: Shipment ${parsedDoc.shipment_number} already exists!`, 'warning');
             return;
         }
-
+ 
         // Look for matching invoice waiting for shipment (strictly matching Customer, Pincode, Qty & Address)
         let matchIndex = -1;
         let warningReason = '';
+        let checkResult = null;
         for (let i = 0; i < records.length; i++) {
             const check = checkMatchingRules(records[i], parsedDoc, false);
             if (check.match) {
                 matchIndex = i;
+                checkResult = check;
                 break;
             } else if (check.reason) {
                 warningReason = check.reason;
@@ -1098,6 +1087,7 @@ function reconcileDocument(parsedDoc) {
             
             // Quantity match check
             match.qty_match = match.invoice_qty === match.shipment_qty;
+            match.bypassed_rules = checkResult.bypassed_rules || [];
             match.status = 'Matched';
             
             showToast(`Matched Shipment ${parsedDoc.shipment_number} with Invoice ${match.invoice_number}! Qty Verification: ${match.qty_match ? 'TRUE' : 'FALSE (Qty Mismatch)'}`, 'success');
@@ -1189,7 +1179,9 @@ function reRunReconciliation() {
                 ship_to_address: row.invoice_address || row.ship_to_address,
                 ship_to_city: row.invoice_city || row.ship_to_city,
                 ship_to_state: row.invoice_state || row.ship_to_state,
-                ship_to_pincode: row.invoice_pincode || row.ship_to_pincode
+                ship_to_pincode: row.invoice_pincode || row.ship_to_pincode,
+                bypassed_rules: row.bypassed_rules || [],
+                previously_matched_to: row.shipment_number
             });
         }
         if (row.shipment_number) {
@@ -1211,7 +1203,9 @@ function reRunReconciliation() {
                 ship_to_address: row.shipment_address || row.ship_to_address,
                 ship_to_city: row.shipment_city || row.ship_to_city,
                 ship_to_state: row.shipment_state || row.ship_to_state,
-                ship_to_pincode: row.shipment_pincode || row.ship_to_pincode
+                ship_to_pincode: row.shipment_pincode || row.ship_to_pincode,
+                bypassed_rules: row.bypassed_rules || [],
+                previously_matched_to: row.invoice_number
             });
         }
     });
@@ -1224,10 +1218,12 @@ function reRunReconciliation() {
                 return;
             }
             let matchIndex = -1;
+            let checkResult = null;
             for (let i = 0; i < newRecords.length; i++) {
                 const check = checkMatchingRules(newRecords[i], parsedDoc, true);
                 if (check.match) {
                     matchIndex = i;
+                    checkResult = check;
                     break;
                 }
             }
@@ -1256,6 +1252,7 @@ function reRunReconciliation() {
                 match.invoice_pincode = parsedDoc.ship_to_pincode;
                 match.invoice_customer_name = parsedDoc.customer_name;
                 match.qty_match = match.invoice_qty === match.shipment_qty;
+                match.bypassed_rules = checkResult.bypassed_rules || [];
                 match.status = 'Matched';
             } else {
                 newRecords.push({
@@ -1299,6 +1296,7 @@ function reRunReconciliation() {
                     boxes: null,
                     weight: null,
                     shipment_items: null,
+                    bypassed_rules: parsedDoc.bypassed_rules || [],
                     status: 'Pending Shipment',
                     timestamp: new Date().toISOString()
                 });
@@ -1308,10 +1306,12 @@ function reRunReconciliation() {
                 return;
             }
             let matchIndex = -1;
+            let checkResult = null;
             for (let i = 0; i < newRecords.length; i++) {
                 const check = checkMatchingRules(newRecords[i], parsedDoc, false);
                 if (check.match) {
                     matchIndex = i;
+                    checkResult = check;
                     break;
                 }
             }
@@ -1346,6 +1346,7 @@ function reRunReconciliation() {
                 }
                 
                 match.qty_match = match.invoice_qty === match.shipment_qty;
+                match.bypassed_rules = checkResult.bypassed_rules || [];
                 match.status = 'Matched';
             } else {
                 newRecords.push({
@@ -1390,6 +1391,7 @@ function reRunReconciliation() {
                     boxes: parsedDoc.boxes,
                     weight: parsedDoc.weight,
                     shipment_items: parsedDoc.items,
+                    bypassed_rules: parsedDoc.bypassed_rules || [],
                     status: 'Pending Invoice',
                     timestamp: new Date().toISOString()
                 });
@@ -1568,7 +1570,145 @@ async function updateTrackingStatuses() {
     }
 }
 
-// Find and returns any active rule mismatches for unmatched records of the same customer
+// Bypass a rule exception for a specific invoice + shipment card pair
+function bypassMismatchRule(rowId, candId, rule) {
+    const records = getLocalRecords();
+    const rowA = records.find(r => r.id === rowId);
+    const rowB = records.find(r => r.id === candId);
+    
+    if (!rowA || !rowB) {
+        showToast("Error: Matching records not found.", "warning");
+        return;
+    }
+    
+    // Add rule to bypassed_rules for both pending records
+    if (!rowA.bypassed_rules) rowA.bypassed_rules = [];
+    if (!rowA.bypassed_rules.includes(rule)) {
+        rowA.bypassed_rules.push(rule);
+    }
+    
+    if (!rowB.bypassed_rules) rowB.bypassed_rules = [];
+    if (!rowB.bypassed_rules.includes(rule)) {
+        rowB.bypassed_rules.push(rule);
+    }
+    
+    // Save updated pending records
+    saveLocalRecords(records);
+    showToast(`Bypassed rule: ${rule.toUpperCase()} for this pair.`, "success");
+    
+    // Re-run matching to see if they now merge or update mismatches!
+    reRunReconciliation();
+}
+
+// Restore rules and split matched record back into two separate cards
+function restoreBypassedRules(matchedId) {
+    const records = getLocalRecords();
+    const row = records.find(r => r.id === matchedId);
+    if (!row) return;
+    
+    // Create new separate invoice record
+    const invoiceCard = {
+        id: 'rec-' + Date.now(),
+        customer_name: row.invoice_customer_name || row.customer_name,
+        invoice_customer_name: row.invoice_customer_name || row.customer_name,
+        shipment_customer_name: null,
+        gstin: row.gstin,
+        pan: row.pan,
+        phone: row.phone,
+        ship_to_address: row.invoice_address || row.ship_to_address,
+        ship_to_city: row.invoice_city || row.ship_to_city,
+        ship_to_state: row.invoice_state || row.ship_to_state,
+        ship_to_pincode: row.invoice_pincode || row.ship_to_pincode,
+        invoice_address: row.invoice_address || row.ship_to_address,
+        invoice_city: row.invoice_city || row.ship_to_city,
+        invoice_state: row.invoice_state || row.ship_to_state,
+        invoice_pincode: row.invoice_pincode || row.ship_to_pincode,
+        shipment_address: null,
+        shipment_city: null,
+        shipment_state: null,
+        shipment_pincode: null,
+        invoice_number: row.invoice_number,
+        invoice_date: row.invoice_date,
+        due_date: row.due_date,
+        eway_bill: row.eway_bill,
+        invoice_amount: row.invoice_amount,
+        invoice_items: row.invoice_items,
+        invoice_qty: row.invoice_qty,
+        invoice_rate: row.invoice_rate,
+        sales_person: row.sales_person,
+        shipment_number: null,
+        shipment_date: null,
+        carrier: null,
+        tracking_number: null,
+        tracking_status: 'Pending Upload',
+        sales_order_number: null,
+        order_date: null,
+        shipment_qty: null,
+        qty_match: null,
+        boxes: null,
+        weight: null,
+        shipment_items: null,
+        status: 'Pending Shipment',
+        timestamp: new Date().toISOString()
+    };
+    
+    // Create new separate shipment record
+    const shipmentCard = {
+        id: 'rec-' + (Date.now() + 1),
+        customer_name: row.shipment_customer_name || row.customer_name,
+        invoice_customer_name: null,
+        shipment_customer_name: row.shipment_customer_name || row.customer_name,
+        gstin: 'N/A',
+        pan: 'N/A',
+        phone: 'N/A',
+        ship_to_address: row.shipment_address || row.ship_to_address,
+        ship_to_city: row.shipment_city || row.ship_to_city,
+        ship_to_state: row.shipment_state || row.ship_to_state,
+        ship_to_pincode: row.shipment_pincode || row.ship_to_pincode,
+        invoice_address: null,
+        invoice_city: null,
+        invoice_state: null,
+        invoice_pincode: null,
+        shipment_address: row.shipment_address || row.ship_to_address,
+        shipment_city: row.shipment_city || row.ship_to_city,
+        shipment_state: row.shipment_state || row.ship_to_state,
+        shipment_pincode: row.shipment_pincode || row.ship_to_pincode,
+        invoice_number: null,
+        invoice_date: null,
+        due_date: null,
+        eway_bill: null,
+        invoice_amount: null,
+        invoice_items: null,
+        invoice_qty: null,
+        invoice_rate: null,
+        sales_person: null,
+        shipment_number: row.shipment_number,
+        shipment_date: row.shipment_date,
+        carrier: row.carrier,
+        tracking_number: row.tracking_number,
+        tracking_status: row.tracking_status || 'In Transit',
+        delivery_timestamp: row.delivery_timestamp || null,
+        sales_order_number: row.sales_order_number,
+        order_date: row.order_date,
+        shipment_qty: row.shipment_qty,
+        qty_match: null,
+        boxes: row.boxes,
+        weight: row.weight,
+        shipment_items: row.shipment_items,
+        status: 'Pending Invoice',
+        timestamp: new Date().toISOString()
+    };
+    
+    const cleanRecords = records.filter(r => r.id !== matchedId);
+    cleanRecords.push(invoiceCard);
+    cleanRecords.push(shipmentCard);
+    
+    saveLocalRecords(cleanRecords);
+    showToast("Restored strict matching. Records split back.", "info");
+    renderFeed();
+}
+
+// Find and returns any rule mismatches for unmatched records of the same customer
 function getMismatchDetailsForCard(row, records) {
     if (row.status === 'Matched') return null;
     
@@ -1578,64 +1718,73 @@ function getMismatchDetailsForCard(row, records) {
     const candidates = records.filter(r => r.status === targetType);
     if (candidates.length === 0) return null;
     
-    // Filter candidates by customer name if customerName match rule is enabled
-    let filtered = candidates;
-    if (matchingRules.customerName) {
-        filtered = candidates.filter(r => r.customer_name === row.customer_name);
-    }
-    
+    // Filter candidates by loose customer name match
+    const filtered = candidates.filter(r => isLooseCustomerNameMatch(r.customer_name, row.customer_name));
     if (filtered.length === 0) return null;
     
-    // For each candidate, calculate mismatches for active rules
+    // For each candidate, calculate mismatches
     let bestMismatchList = null;
     let minMismatches = 999;
+    let bestCandidateId = null;
     
     filtered.forEach(cand => {
         const mismatches = [];
+        const activeBypassed = [...new Set([...(row.bypassed_rules || []), ...(cand.bypassed_rules || [])])];
         
         // 1. Customer Name Check
-        if (matchingRules.customerName && row.customer_name !== cand.customer_name) {
-            mismatches.push({ rule: 'Customer Name', label: 'Name Mismatch', details: `${row.customer_name} vs ${cand.customer_name}` });
+        if (!activeBypassed.includes('customer') && row.customer_name !== cand.customer_name) {
+            mismatches.push({ rule: 'customer', label: 'Customer Mismatch', details: `${row.customer_name} vs ${cand.customer_name}` });
         }
         
         // 2. Qty Check
-        const rowQty = row.invoice_qty !== null ? row.invoice_qty : row.shipment_qty;
-        const candQty = cand.invoice_qty !== null ? cand.invoice_qty : cand.shipment_qty;
-        if (matchingRules.qty && rowQty !== candQty) {
-            mismatches.push({ rule: 'Quantity', label: 'Qty Mismatch', details: `${rowQty} vs ${candQty}` });
+        if (!activeBypassed.includes('qty')) {
+            const rowQty = row.invoice_qty !== null ? row.invoice_qty : row.shipment_qty;
+            const candQty = cand.invoice_qty !== null ? cand.invoice_qty : cand.shipment_qty;
+            if (rowQty !== candQty) {
+                mismatches.push({ rule: 'qty', label: 'Qty Mismatch', details: `${rowQty} vs ${candQty}` });
+            }
         }
         
         // 3. Pincode Check
-        const rowPin = row.invoice_pincode || row.shipment_pincode || row.ship_to_pincode || 'N/A';
-        const candPin = cand.invoice_pincode || cand.shipment_pincode || cand.ship_to_pincode || 'N/A';
-        const pinMatches = rowPin !== 'N/A' && candPin !== 'N/A' && rowPin === candPin;
-        if (matchingRules.pincode && !pinMatches) {
-            mismatches.push({ rule: 'Pincode', label: 'Pincode Mismatch', details: `${rowPin} vs ${candPin}` });
+        if (!activeBypassed.includes('pincode')) {
+            const rowPin = row.invoice_pincode || row.shipment_pincode || row.ship_to_pincode || 'N/A';
+            const candPin = cand.invoice_pincode || cand.shipment_pincode || cand.ship_to_pincode || 'N/A';
+            const pinMatches = rowPin !== 'N/A' && candPin !== 'N/A' && rowPin === candPin;
+            if (!pinMatches) {
+                mismatches.push({ rule: 'pincode', label: 'Pincode Mismatch', details: `${rowPin} vs ${candPin}` });
+            }
         }
         
         // 4. City Check
-        const rowCity = (row.invoice_city || row.shipment_city || row.ship_to_city || '').trim().toUpperCase();
-        const candCity = (cand.invoice_city || cand.shipment_city || cand.ship_to_city || '').trim().toUpperCase();
-        const cityMatches = rowCity !== '' && candCity !== '' && rowCity === candCity;
-        if (matchingRules.city && !cityMatches) {
-            mismatches.push({ rule: 'City', label: 'City Mismatch', details: `${rowCity} vs ${candCity}` });
+        if (!activeBypassed.includes('city')) {
+            const rowCity = (row.invoice_city || row.shipment_city || row.ship_to_city || '').trim().toUpperCase();
+            const candCity = (cand.invoice_city || cand.shipment_city || cand.ship_to_city || '').trim().toUpperCase();
+            const cityMatches = rowCity !== '' && candCity !== '' && rowCity === candCity;
+            if (!cityMatches) {
+                mismatches.push({ rule: 'city', label: 'City Mismatch', details: `${rowCity} vs ${candCity}` });
+            }
         }
         
         // 5. State Check
-        const rowState = (row.invoice_state || row.shipment_state || row.ship_to_state || '').trim().toUpperCase();
-        const candState = (cand.invoice_state || cand.shipment_state || cand.ship_to_state || '').trim().toUpperCase();
-        const stateMatches = rowState !== '' && candState !== '' && rowState === candState;
-        if (matchingRules.state && !stateMatches) {
-            mismatches.push({ rule: 'State', label: 'State Mismatch', details: `${rowState} vs ${candState}` });
+        if (!activeBypassed.includes('state')) {
+            const rowState = (row.invoice_state || row.shipment_state || row.ship_to_state || '').trim().toUpperCase();
+            const candState = (cand.invoice_state || cand.shipment_state || cand.ship_to_state || '').trim().toUpperCase();
+            const stateMatches = rowState !== '' && candState !== '' && rowState === candState;
+            if (!stateMatches) {
+                mismatches.push({ rule: 'state', label: 'State Mismatch', details: `${rowState} vs ${candState}` });
+            }
         }
         
         if (mismatches.length < minMismatches) {
             minMismatches = mismatches.length;
             bestMismatchList = mismatches;
+            bestCandidateId = cand.id;
         }
     });
     
-    return bestMismatchList && bestMismatchList.length > 0 ? bestMismatchList : null;
+    return bestMismatchList && bestMismatchList.length > 0 
+        ? { candId: bestCandidateId, list: bestMismatchList } 
+        : null;
 }
 
 // Render dynamic Feed Dashboard
@@ -1686,13 +1835,22 @@ function renderFeed() {
             ? `<div class="match-link"><i class="fa-solid fa-link"></i></div>`
             : `<div class="match-link broken"><i class="fa-solid fa-link-slash"></i></div>`;
 
-        // Mismatch labels
+        // Mismatch labels & Ignore buttons
         let mismatchLabelsHtml = '';
         if (!isMatched) {
-            const mismatches = getMismatchDetailsForCard(row, records);
-            if (mismatches && mismatches.length > 0) {
-                mismatches.forEach(m => {
-                    mismatchLabelsHtml += `<span class="badge badge-danger" style="margin-left: 8px; background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3);" title="${m.details}"><i class="fa-solid fa-circle-exclamation"></i> ${m.label}</span>`;
+            const result = getMismatchDetailsForCard(row, records);
+            if (result && result.list.length > 0) {
+                result.list.forEach(m => {
+                    mismatchLabelsHtml += `
+                        <div class="mismatch-badge-container" style="display: inline-flex; align-items: center; background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.25); border-radius: 4px; padding: 2px 6px; margin-left: 8px;">
+                            <span style="color: #f87171; font-size: 0.72rem; font-weight: 600;" title="${m.details}">
+                                <i class="fa-solid fa-circle-exclamation"></i> ${m.label}
+                            </span>
+                            <button onclick="bypassMismatchRule('${row.id}', '${result.candId}', '${m.rule}')" class="btn-ignore" title="Ignore this mismatch and match these documents" style="background: none; border: none; color: #f87171; cursor: pointer; margin-left: 6px; padding: 0; font-size: 0.72rem; display: inline-flex; align-items: center; outline: none; transition: color 0.2s;">
+                                <i class="fa-solid fa-circle-check" style="color: #10b981; font-size: 0.85rem;"></i>
+                            </button>
+                        </div>
+                    `;
                 });
             }
         }
@@ -1700,10 +1858,24 @@ function renderFeed() {
         // Verification Badge Row
         let verificationBadge = '';
         if (isMatched) {
-            const verClass = row.qty_match ? 'badge-success' : 'badge-danger';
-            const verIcon = row.qty_match ? 'fa-check-double' : 'fa-circle-xmark';
-            const verText = row.qty_match ? 'Qty Match (TRUE)' : 'Qty Mismatch (FALSE)';
-            verificationBadge = `<span class="badge ${verClass}" style="margin-left: 8px;"><i class="fa-solid ${verIcon}"></i> ${verText}</span>`;
+            if (row.bypassed_rules && row.bypassed_rules.length > 0) {
+                const rulesLabel = row.bypassed_rules.map(r => r.toUpperCase()).join(', ');
+                verificationBadge = `
+                    <div class="bypass-badge-container" style="display: inline-flex; align-items: center; background: rgba(251, 191, 36, 0.15); border: 1px solid rgba(251, 191, 36, 0.3); border-radius: 4px; padding: 2px 8px; margin-left: 8px;">
+                        <span style="color: #fbbf24; font-size: 0.72rem; font-weight: 700;">
+                            <i class="fa-solid fa-unlock-keyhole"></i> Ignored Rule: ${rulesLabel}
+                        </span>
+                        <button onclick="restoreBypassedRules('${row.id}')" class="btn-restore" title="Restore strict rules and split this record back" style="background: none; border: none; color: #fbbf24; cursor: pointer; margin-left: 6px; padding: 0; font-size: 0.72rem; display: inline-flex; align-items: center; outline: none;">
+                            <i class="fa-solid fa-arrow-rotate-left" style="font-size: 0.75rem;"></i>
+                        </button>
+                    </div>
+                `;
+            } else {
+                const verClass = row.qty_match ? 'badge-success' : 'badge-danger';
+                const verIcon = row.qty_match ? 'fa-check-double' : 'fa-circle-xmark';
+                const verText = row.qty_match ? 'Qty Match (TRUE)' : 'Qty Mismatch (FALSE)';
+                verificationBadge = `<span class="badge ${verClass}" style="margin-left: 8px;"><i class="fa-solid ${verIcon}"></i> ${verText}</span>`;
+            }
         }
 
         // Overdue status block
@@ -1875,6 +2047,13 @@ function updateStats(records) {
     let delivered = 0;
     let undelivered = 0;
 
+    // Active mismatch counts (for unmatched records)
+    let mismatchCounts = { customer: 0, qty: 0, pincode: 0, city: 0, state: 0 };
+    // Ignored exception counts (for matched records)
+    let bypassCounts = { customer: 0, qty: 0, pincode: 0, city: 0, state: 0 };
+    
+    const processedUnmatchedIds = new Set();
+
     records.forEach(row => {
         if (row.invoice_number) totalInv++;
         if (row.shipment_number) totalShip++;
@@ -1882,6 +2061,31 @@ function updateStats(records) {
             reconciled++;
         } else {
             unmatched++;
+        }
+        
+        // Count bypassed rules uniquely by looking at records containing an invoice component
+        if (row.invoice_number && row.bypassed_rules && Array.isArray(row.bypassed_rules)) {
+            row.bypassed_rules.forEach(rule => {
+                if (bypassCounts[rule] !== undefined) {
+                    bypassCounts[rule]++;
+                }
+            });
+        }
+        
+        if (row.status !== 'Matched') {
+            // Calculate mismatches to count them in statistics
+            if (!processedUnmatchedIds.has(row.id)) {
+                const result = getMismatchDetailsForCard(row, records);
+                if (result && result.list) {
+                    result.list.forEach(m => {
+                        if (mismatchCounts[m.rule] !== undefined) {
+                            mismatchCounts[m.rule]++;
+                        }
+                    });
+                    processedUnmatchedIds.add(result.candId);
+                }
+                processedUnmatchedIds.add(row.id);
+            }
         }
 
         // Count Delivered and Undelivered for records that have shipment orders
@@ -1900,6 +2104,31 @@ function updateStats(records) {
     document.getElementById('stat-unmatched').innerText = unmatched;
     document.getElementById('stat-delivered').innerText = delivered;
     document.getElementById('stat-undelivered').innerText = undelivered;
+
+    // Update Exceptions sidebar widget counts
+    const elMisCust = document.getElementById('stat-mismatch-customer');
+    const elMisQty = document.getElementById('stat-mismatch-qty');
+    const elMisPin = document.getElementById('stat-mismatch-pincode');
+    const elMisCity = document.getElementById('stat-mismatch-city');
+    const elMisState = document.getElementById('stat-mismatch-state');
+
+    const elBypCust = document.getElementById('stat-bypass-customer');
+    const elBypQty = document.getElementById('stat-bypass-qty');
+    const elBypPin = document.getElementById('stat-bypass-pincode');
+    const elBypCity = document.getElementById('stat-bypass-city');
+    const elBypState = document.getElementById('stat-bypass-state');
+
+    if (elMisCust) elMisCust.innerText = mismatchCounts.customer;
+    if (elMisQty) elMisQty.innerText = mismatchCounts.qty;
+    if (elMisPin) elMisPin.innerText = mismatchCounts.pincode;
+    if (elMisCity) elMisCity.innerText = mismatchCounts.city;
+    if (elMisState) elMisState.innerText = mismatchCounts.state;
+
+    if (elBypCust) elBypCust.innerText = bypassCounts.customer;
+    if (elBypQty) elBypQty.innerText = bypassCounts.qty;
+    if (elBypPin) elBypPin.innerText = bypassCounts.pincode;
+    if (elBypCity) elBypCity.innerText = bypassCounts.city;
+    if (elBypState) elBypState.innerText = bypassCounts.state;
 }
 
 // Compile Styled Excel using Browser DOM Tables (preserving red colors and formats!)
@@ -2282,7 +2511,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Run tracking statuses updates
     updateTrackingStatuses();
-    renderFeed();
+    
+    // Initialize Realtime Database Sync
+    initRealTimeSync();
 
 
 
@@ -2505,3 +2736,128 @@ window.saveDeliveryStatus = function(id) {
         renderFeed();
     }
 };
+
+// Open mismatch details modal
+window.openMismatchModal = function(rule) {
+    const modal = document.getElementById('mismatch-modal');
+    const title = document.getElementById('modal-title');
+    const body = document.getElementById('modal-body');
+    
+    if (!modal || !title || !body) return;
+    
+    const records = getLocalRecords();
+    const ruleLabel = rule.charAt(0).toUpperCase() + rule.slice(1);
+    title.innerHTML = `<i class="fa-solid fa-circle-exclamation" style="color: #f87171; margin-right: 8px;"></i> Active Mismatches: ${ruleLabel} Mismatch`;
+    
+    // Find all unmatched records failing this specific rule
+    const list = [];
+    const processedIds = new Set();
+    
+    records.forEach(row => {
+        if (row.status !== 'Matched' && !processedIds.has(row.id)) {
+            const result = getMismatchDetailsForCard(row, records);
+            if (result && result.list) {
+                const found = result.list.find(m => m.rule === rule);
+                if (found) {
+                    const cand = records.find(r => r.id === result.candId);
+                    if (cand) {
+                        list.push({
+                            row: row,
+                            cand: cand,
+                            details: found.details,
+                            candId: result.candId
+                        });
+                        processedIds.add(row.id);
+                        processedIds.add(cand.id);
+                    }
+                }
+            }
+        }
+    });
+    
+    if (list.length === 0) {
+        body.innerHTML = `
+            <div style="text-align: center; padding: 40px; color: var(--text-muted);">
+                <i class="fa-solid fa-circle-check" style="font-size: 3rem; color: var(--success); margin-bottom: 16px; display: block;"></i>
+                <p style="font-size: 0.95rem; font-weight: 700; color: white; margin-bottom: 4px;">No Active Mismatches!</p>
+                <p style="font-size: 0.8rem;">All records are fully matched or have bypassed this rule.</p>
+            </div>
+        `;
+    } else {
+        let tableHtml = `
+            <table class="modal-table">
+                <thead>
+                    <tr>
+                        <th>Customer Name</th>
+                        <th>Tax Invoice</th>
+                        <th>Shipment Order</th>
+                        <th>Mismatch Reason</th>
+                        <th style="text-align: center;">Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+        `;
+        
+        list.forEach(item => {
+            const inv = item.row.invoice_number ? item.row : item.cand;
+            const shp = item.row.shipment_number ? item.row : item.cand;
+            
+            tableHtml += `
+                <tr>
+                    <td>
+                        <div style="font-weight: 700; color: #f8fafc; font-size: 0.85rem;">${inv.customer_name}</div>
+                    </td>
+                    <td>
+                        <div style="font-size: 0.8rem; font-family: monospace; color: var(--primary); font-weight: 700;">${inv.invoice_number}</div>
+                        <div style="font-size: 0.72rem; color: var(--text-muted);">Qty: ${inv.invoice_qty} | Pin: ${inv.invoice_pincode || 'N/A'}</div>
+                    </td>
+                    <td>
+                        <div style="font-size: 0.8rem; font-family: monospace; color: var(--primary); font-weight: 700;">${shp.shipment_number}</div>
+                        <div style="font-size: 0.72rem; color: var(--text-muted);">Qty: ${shp.shipment_qty} | Pin: ${shp.shipment_pincode || 'N/A'}</div>
+                    </td>
+                    <td>
+                        <div style="color: #f87171; font-weight: 700; font-size: 0.78rem;" title="${item.details}">
+                            <i class="fa-solid fa-circle-exclamation" style="margin-right: 4px;"></i> ${ruleLabel} Mismatch
+                        </div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 2px;">(${item.details})</div>
+                    </td>
+                    <td style="text-align: center;">
+                        <button onclick="bypassModalRule('${item.row.id}', '${item.candId}', '${rule}')" class="btn" style="background: rgba(16, 185, 129, 0.12); color: var(--success); border: 1px solid rgba(16, 185, 129, 0.2); border-radius: var(--radius-sm); padding: 4px 10px; font-size: 0.75rem; font-weight: 700; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; outline: none; transition: var(--transition-smooth); font-family: inherit;">
+                            <i class="fa-solid fa-circle-check"></i> Bypass Rule
+                        </button>
+                    </td>
+                </tr>
+            `;
+        });
+        
+        tableHtml += `
+                </tbody>
+            </table>
+        `;
+        body.innerHTML = tableHtml;
+    }
+    
+    modal.classList.add('show');
+};
+
+window.closeMismatchModal = function() {
+    const modal = document.getElementById('mismatch-modal');
+    if (modal) {
+        modal.classList.remove('show');
+    }
+};
+
+window.bypassModalRule = function(rowId, candId, rule) {
+    bypassMismatchRule(rowId, candId, rule);
+    setTimeout(() => {
+        openMismatchModal(rule);
+    }, 100);
+};
+
+// Close modal when clicking outside of it
+window.addEventListener('click', (e) => {
+    const modal = document.getElementById('mismatch-modal');
+    if (e.target === modal) {
+        closeMismatchModal();
+    }
+});
